@@ -40,7 +40,7 @@ try:
                                  QHBoxLayout, QLabel, QPushButton, QTableWidget, 
                                  QTableWidgetItem, QHeaderView, QTextEdit, QFileDialog, 
                                  QMessageBox, QFrame, QLineEdit, QProgressBar, QMenu, 
-                                 QAction, QTabWidget, QSplitter)
+                                 QAction, QTabWidget, QSplitter, QComboBox)
     from PyQt5.QtCore import Qt, QThread, pyqtSignal
     from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QCursor
 except ImportError:
@@ -69,7 +69,6 @@ def save_registry(registry):
 
 # --- UTILS ĐO DUNG LƯỢNG (STORAGE TRACKER) ---
 def get_dir_size(path):
-    """Tính tổng dung lượng thư mục hoặc file (bytes)"""
     total_size = 0
     try:
         path = Path(path)
@@ -85,7 +84,6 @@ def get_dir_size(path):
     return total_size
 
 def get_deb_installed_size(pkg_name):
-    """Truy vấn dung lượng đã cài đặt của gói deb qua dpkg (bytes)"""
     try:
         result = subprocess.run(
             ["dpkg-query", "-W", "-f=${Installed-Size}\\n", pkg_name],
@@ -97,7 +95,6 @@ def get_deb_installed_size(pkg_name):
         return 0
 
 def format_size(size_bytes):
-    """Format dung lượng sang dạng trực quan (KB, MB, GB)"""
     if size_bytes <= 0:
         return "N/A"
     if size_bytes < 1024:
@@ -109,7 +106,6 @@ def format_size(size_bytes):
     return f"{s} {size_name[i]}"
 
 def get_app_display_size(app_id, info):
-    """Lấy dung lượng hiển thị của app dựa theo loại"""
     app_type = info.get("type", "")
     if app_type == "deb":
         size = get_deb_installed_size(info.get("deb_package_name", app_id))
@@ -688,6 +684,139 @@ class InstallWorker(QThread):
         self.finished_signal.emit(True, f"Cài đặt Snap {snap_name} thành công!", icon_path)
 
 
+# --- THREAD GỠ CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
+class UninstallWorker(QThread):
+    progress_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, app_id, purge_config=False):
+        super().__init__()
+        self.app_id = app_id
+        self.purge_config = purge_config
+
+    def run(self):
+        registry = load_registry()
+        if self.app_id not in registry:
+            self.finished_signal.emit(False, "Ứng dụng không tồn tại trong Registry!")
+            return
+
+        info = registry[self.app_id]
+        app_name = info.get("name", self.app_id)
+        app_type = info.get("type", "")
+        
+        self.progress_signal.emit(f"Bắt đầu gỡ cài đặt: {app_name} (Loại: {app_type.upper()})")
+
+        # 1. Xóa các shortcut .desktop
+        self.progress_signal.emit("Đang xóa các shortcut Desktop & Menu...")
+        desktop_files = info.get("desktop_files", [])
+        for fpath in desktop_files:
+            try:
+                p = Path(fpath)
+                if p.exists():
+                    p.unlink()
+                    self.progress_signal.emit(f"Đã xóa file: {p.name}")
+            except Exception as e:
+                self.progress_signal.emit(f"Lỗi khi xóa shortcut: {str(e)}")
+
+        # 2. Xóa file cài vật lý hoặc chạy lệnh gỡ gói
+        if app_type == "deb":
+            self.progress_signal.emit("Yêu cầu quyền admin để gỡ gói apt (dpkg)...")
+            cmd = ["pkexec", "apt-get", "remove", "-y", info.get("deb_package_name", self.app_id)]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    self.finished_signal.emit(False, f"Gỡ gói .deb thất bại: {proc.stderr}")
+                    return
+                self.progress_signal.emit("Đã gỡ bỏ gói hệ thống thành công.")
+            except Exception as e:
+                self.finished_signal.emit(False, f"Lỗi thực thi lệnh gỡ apt: {str(e)}")
+                return
+                
+        elif app_type in ["appimage", "archive"]:
+            install_path = Path(info.get("install_path", ""))
+            if install_path.exists() and install_path.is_dir() and install_path.resolve() != APPS_DIR.resolve():
+                self.progress_signal.emit(f"Đang xóa thư mục cài đặt: {install_path}")
+                try:
+                    shutil.rmtree(install_path)
+                    self.progress_signal.emit("Đã xóa thư mục cài đặt gốc.")
+                except Exception as e:
+                    self.progress_signal.emit(f"Lỗi xóa thư mục cài: {str(e)}")
+            elif install_path.exists() and install_path.is_file():
+                try:
+                    install_path.unlink()
+                    self.progress_signal.emit("Đã xóa file thực thi gốc.")
+                except Exception as e:
+                    self.progress_signal.emit(f"Lỗi xóa file thực thi: {str(e)}")
+                    
+        elif app_type == "flatpak":
+            app_id_real = info.get("flatpak_app_id", self.app_id)
+            self.progress_signal.emit(f"Đang chạy lệnh gỡ flatpak user cho {app_id_real}...")
+            cmd = ["flatpak", "uninstall", "--user", "-y", app_id_real]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    self.finished_signal.emit(False, f"Lỗi gỡ flatpak: {proc.stderr}")
+                    return
+                self.progress_signal.emit("Đã gỡ flatpak thành công.")
+            except Exception as e:
+                self.finished_signal.emit(False, f"Lỗi chạy lệnh flatpak: {str(e)}")
+                return
+                
+        elif app_type == "snap":
+            snap_name_real = info.get("snap_name", self.app_id)
+            self.progress_signal.emit("Yêu cầu quyền admin để gỡ snap...")
+            cmd = ["pkexec", "snap", "remove", snap_name_real]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    self.finished_signal.emit(False, f"Lỗi gỡ snap: {proc.stderr}")
+                    return
+                self.progress_signal.emit("Đã gỡ snap thành công.")
+            except Exception as e:
+                self.finished_signal.emit(False, f"Lỗi chạy lệnh snap: {str(e)}")
+                return
+
+        # 3. DỌN CẤU HÌNH RÁC (PURGE DATA) (Wow 4)
+        if self.purge_config:
+            self.progress_signal.emit("Bắt đầu quét dọn cấu hình rác của ứng dụng...")
+            home_dir = Path.home()
+            
+            # Các thư mục cấu hình rác tiềm năng
+            target_subdirs = [
+                home_dir / ".config",
+                home_dir / ".local" / "share",
+                home_dir / ".cache"
+            ]
+            
+            keywords = [self.app_id.lower(), app_name.lower().replace(" ", "")]
+            deleted_count = 0
+            
+            for parent_dir in target_subdirs:
+                if not parent_dir.exists():
+                    continue
+                for item in parent_dir.iterdir():
+                    if item.is_dir() and not item.name.startswith('.'):
+                        # So khớp từ khóa
+                        if any(kw in item.name.lower() for kw in keywords):
+                            self.progress_signal.emit(f"Phát hiện thư mục rác: {item.relative_to(home_dir)}")
+                            try:
+                                shutil.rmtree(item)
+                                self.progress_signal.emit(f"-> Đã dọn sạch: {item.name}")
+                                deleted_count += 1
+                            except Exception as e:
+                                self.progress_signal.emit(f"-> Lỗi không xóa được: {str(e)}")
+            if deleted_count > 0:
+                self.progress_signal.emit(f"Đã dọn dẹp xong {deleted_count} thư mục cấu hình rác.")
+            else:
+                self.progress_signal.emit("Không tìm thấy thư mục cấu hình rác nào của ứng dụng này.")
+
+        # 4. Cập nhật Registry
+        registry.pop(self.app_id, None)
+        save_registry(registry)
+        
+        self.finished_signal.emit(True, f"Đã gỡ cài đặt ứng dụng '{app_name}' thành công!")
+
+
 # --- WORKER CHẠY LỆNH SHELL & GIT DƯỚI NỀN (QTHREAD) ---
 class ScriptWorker(QThread):
     log_signal = pyqtSignal(str)
@@ -724,7 +853,23 @@ class ScriptWorker(QThread):
             self.finished_signal.emit(False, f"Lỗi: {str(e)}")
 
 
-# --- SCAN AIaC SKILLS (SYM LINKS MANAGER) ---
+# --- PHÂN LOẠI & QUÉT AIaC SKILLS (SYM LINKS MANAGER) ---
+def get_skill_category(name):
+    """Phân loại kỹ năng dựa trên tên của nó"""
+    name_lower = name.lower()
+    if any(kw in name_lower for kw in ["flutter", "vuaassistant", "mobile", "ios", "android", "designer"]):
+        return "📱 Mobile & App"
+    elif any(kw in name_lower for kw in ["odoo", "postgres", "database", "sql"]):
+        return "🐍 Odoo & Backend"
+    elif any(kw in name_lower for kw in ["ponytail", "audit", "checklist", "accidental-data-loss"]):
+        return "🔍 Audit & Chất lượng"
+    elif any(kw in name_lower for kw in ["token", "caveman", "superpowers"]):
+        return "⚡ Tiết kiệm Token"
+    elif any(kw in name_lower for kw in ["gitsync", "dev-workflow", "vuaoffice", "openclaw", "payload", "marketing", "airouter", "rancher", "securities"]):
+        return "⚙️ Quy trình & Git"
+    else:
+        return "📁 Khác / Mặc định"
+
 def scan_aiac_skills():
     skills = {}
     
@@ -751,9 +896,11 @@ def scan_aiac_skills():
                         "type": "Skill Core"
                     }
                     
-    # 3. Quét kiểm tra symlink
+    # 3. Quét kiểm tra symlink và phân loại
     for name, info in skills.items():
         dst_path = GEMINI_SKILLS_DIR / name
+        info["category"] = get_skill_category(name)
+        
         if not dst_path.exists() and not dst_path.is_symlink():
             info["status"] = "Chưa cài đặt"
             info["color"] = "#7f8c8d"
@@ -789,6 +936,58 @@ def get_aiac_git_info():
         return res.stdout.strip()
     except Exception:
         return "Không thể đọc Git log"
+
+def get_skill_markdown_content(src_path):
+    """Tìm đọc file mô tả SKILL.md hoặc README.md của skill"""
+    potential_files = [
+        src_path / "SKILL.md",
+        src_path / "prompts" / "SKILL.md",
+        src_path / "README.md"
+    ]
+    for pf in potential_files:
+        if pf.exists():
+            try:
+                with open(pf, "r", encoding="utf-8", errors="ignore") as f:
+                    return f.read()
+            except Exception:
+                pass
+    return ""
+
+def markdown_to_html(md_text):
+    """Parser Markdown đơn giản sang HTML để hiển thị Rich Text"""
+    if not md_text.strip():
+        return "<p style='color: #7f8c8d;'>Không có file hướng dẫn hoặc mô tả SKILL.md/README.md cho skill này.</p>"
+        
+    # Loại bỏ Frontmatter YAML
+    md_text = re.sub(r'^---.*?---', '', md_text, flags=re.DOTALL)
+    
+    # Escape HTML cơ bản để tránh lỗi render
+    html = md_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    
+    # Thay thế code block ``` ... ```
+    html = re.sub(r'```(.*?)\n(.*?)```', r'<pre style="background-color: #f5f6fa; color: #2f3640; padding: 8px; border-left: 4px solid #3498db; font-family: monospace; font-size: 10pt;">\2</pre>', html, flags=re.DOTALL)
+    
+    # Thay thế inline code `...`
+    html = re.sub(r'`(.*?)`', r'<code style="background-color: #f1f2f6; color: #c23616; padding: 2px 4px; border-radius: 3px; font-family: monospace; font-weight: bold;">\1</code>', html)
+    
+    # Thay thế Heading
+    html = re.sub(r'^### (.*?)$', r'<h4 style="color: #2c3e50; margin-top: 10px; margin-bottom: 5px; font-weight: bold;">\1</h4>', html, flags=re.MULTILINE)
+    html = re.sub(r'^## (.*?)$', r'<h3 style="color: #2980b9; margin-top: 12px; margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 3px;">\1</h3>', html, flags=re.MULTILINE)
+    html = re.sub(r'^# (.*?)$', r'<h2 style="color: #2c3e50; margin-top: 14px; margin-bottom: 8px; border-bottom: 2px solid #3498db; padding-bottom: 5px;">\1</h2>', html, flags=re.MULTILINE)
+    
+    # Thay thế list item `- ` hoặc `* `
+    html = re.sub(r'^[-\*] (.*?)$', r'<li>\1</li>', html, flags=re.MULTILINE)
+    
+    # Thay thế bold **...**
+    html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', html)
+    
+    # Chuyển đổi ngắt dòng sang <br>
+    html = html.replace('\n', '<br>')
+    
+    # Bọc các <li> liền kề thành <ul> (thô sơ nhưng đủ dùng)
+    html = html.replace("</li><br><li>", "</li><li>")
+    
+    return html
 
 
 # --- TÙY CHỈNH WIDGET KÉO THẢ (DRAG & DROP ZONE) ---
@@ -882,7 +1081,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Linux App & AIaC Skill Manager (AIaC 2026)")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(1000, 750)
+        self.all_skills = {}
         self.init_ui()
         self.refresh_table()
         self.refresh_skills_table()
@@ -938,7 +1138,7 @@ class MainWindow(QMainWindow):
         self.download_progress.hide()
         tab_installer_layout.addWidget(self.download_progress)
 
-        # Drop Zone (DropZoneWidget đã được định nghĩa ở phía trước)
+        # Drop Zone
         self.drop_zone = DropZoneWidget(self)
         self.drop_zone.fileDropped.connect(self.check_and_start_install)
         tab_installer_layout.addWidget(self.drop_zone, stretch=2)
@@ -981,6 +1181,30 @@ class MainWindow(QMainWindow):
         tab_aiac_layout.setContentsMargins(15, 15, 15, 15)
         tab_aiac_layout.setSpacing(12)
 
+        # Hướng dẫn & Giải thích ý nghĩa các nút / cơ chế (Wow 5)
+        help_frame = QFrame(self)
+        help_frame.setStyleSheet("background-color: #eef2f7; border-left: 5px solid #3498db; padding: 8px; border-radius: 4px;")
+        help_layout = QVBoxLayout(help_frame)
+        help_layout.setSpacing(4)
+        
+        lbl_help_title = QLabel("💡 <b>Hướng dẫn & Giải thích Cơ chế vận hành AIaC:</b>", self)
+        lbl_help_title.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        
+        lbl_help_desc = QLabel(
+            "- <b>Kích hoạt / Tắt</b>: Bật (tạo symlink) để Antigravity nhận diện và trang bị thêm skill cho AI, "
+            "hoặc Tắt (xóa symlink) khi không dùng để giảm tải bộ nhớ context, <b>tiết kiệm token/chi phí</b>.<br>"
+            "- <b>Kiểm tra & Pull Git</b>: Kéo code, prompt và các skill mới nhất của AIaC từ máy chủ (Git Upstream) về local.<br>"
+            "- <b>Đồng bộ tất cả</b>: Kích hoạt liên kết hàng loạt tất cả skill có sẵn vào thư mục config của Antigravity.<br>"
+            "- <b>Cập nhật Resource</b>: Tải/Cập nhật các tài nguyên offline cần thiết cho bộ kiểm duyệt kỹ năng.",
+            self
+        )
+        lbl_help_desc.setFont(QFont("Segoe UI", 9))
+        lbl_help_desc.setWordWrap(True)
+        
+        help_layout.addWidget(lbl_help_title)
+        help_layout.addWidget(lbl_help_desc)
+        tab_aiac_layout.addWidget(help_frame)
+
         # Header Git Info
         git_header = QFrame(self)
         git_header.setStyleSheet("background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 8px;")
@@ -1020,33 +1244,68 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_update_resource)
         tab_aiac_layout.addLayout(btn_layout)
 
-        # Splitter phân tách bảng Skills và Log
-        splitter = QSplitter(Qt.Vertical)
+        # Bộ lọc Nhóm kỹ năng (Wow 6)
+        filter_layout = QHBoxLayout()
+        lbl_filter = QLabel("<b>Phân loại nhóm kỹ năng:</b>", self)
+        lbl_filter.setFont(QFont("Segoe UI", 10))
+        self.filter_combo = QComboBox(self)
+        self.filter_combo.addItems([
+            "Tất cả các kỹ năng",
+            "📱 Mobile & App (Flutter, iOS, Hermes)",
+            "🐍 Odoo & Backend (Python, Database)",
+            "⚙️ Quy trình & Git (GitSync, Dev-Workflow)",
+            "🔍 Audit & Chất lượng code (Ponytail, Checklist)",
+            "⚡ Tiết kiệm Token (Token-Killer, Caveman)"
+        ])
+        self.filter_combo.setStyleSheet("padding: 6px; border: 1px solid #bdc3c7; border-radius: 6px; background-color: white;")
+        self.filter_combo.currentIndexChanged.connect(self.refresh_skills_table)
+        filter_layout.addWidget(lbl_filter)
+        filter_layout.addWidget(self.filter_combo)
+        filter_layout.addStretch()
+        tab_aiac_layout.addLayout(filter_layout)
+
+        # Splitter ngang chia đôi Trái (Bảng) - Phải (Mô tả chi tiết) (Wow 7)
+        main_splitter = QSplitter(Qt.Horizontal)
         
-        # Bảng danh sách skills
+        # Cột bên trái: Bảng
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.skills_table = QTableWidget(self)
-        self.skills_table.setColumnCount(4)
-        self.skills_table.setHorizontalHeaderLabels(["Tên Kỹ Năng (Skill)", "Đường Dẫn Nguồn", "Trạng Thái", "Thao Tác"])
+        self.skills_table.setColumnCount(3)
+        self.skills_table.setHorizontalHeaderLabels(["Tên Kỹ Năng", "Trạng Thái", "Thao Tác"])
         self.skills_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.skills_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.skills_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.skills_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.skills_table.setStyleSheet("""
             QTableWidget { background-color: white; border: 1px solid #bdc3c7; border-radius: 8px; }
             QHeaderView::section { background-color: #34495e; color: white; font-weight: bold; padding: 6px; border: none; }
         """)
-        splitter.addWidget(self.skills_table)
+        self.skills_table.cellClicked.connect(self.on_skill_selected)
+        left_layout.addWidget(self.skills_table)
+        main_splitter.addWidget(left_widget)
 
-        # Log View Tab 2
+        # Cột bên phải: Panel chi tiết kỹ năng
+        self.detail_panel = QTextEdit(self)
+        self.detail_panel.setReadOnly(True)
+        self.detail_panel.setPlaceholderText("💡 Vui lòng click chọn một Kỹ năng bên bảng trái để xem mô tả chi tiết, hướng dẫn cách sử dụng và dự án phù hợp...")
+        self.detail_panel.setStyleSheet("background-color: white; border: 1px solid #bdc3c7; border-radius: 8px; padding: 12px; font-size: 11pt;")
+        main_splitter.addWidget(self.detail_panel)
+        
+        main_splitter.setSizes([500, 450])
+        tab_aiac_layout.addWidget(main_splitter, stretch=3)
+
+        # Log View Tab 2 ở dưới cùng
         self.aiac_log_view = QTextEdit(self)
         self.aiac_log_view.setReadOnly(True)
-        self.aiac_log_view.setPlaceholderText("Nhật ký tiến trình đồng bộ Git & Skills sẽ hiển thị tại đây...")
+        self.aiac_log_view.setPlaceholderText("Nhật ký tiến trình đồng bộ Git & Skills...")
+        self.aiac_log_view.setMaximumHeight(100)
         self.aiac_log_view.setStyleSheet("background-color: #2c3e50; color: #ecf0f1; font-family: Courier; border-radius: 8px; padding: 6px;")
-        splitter.addWidget(self.aiac_log_view)
-        
-        splitter.setSizes([400, 150])
-        tab_aiac_layout.addWidget(splitter)
+        tab_aiac_layout.addWidget(self.aiac_log_view, stretch=1)
 
         tab_widget.addTab(tab_aiac, "🤖  AIaC Skill Manager")
+        self.statusBar().showMessage("Sẵn sàng.")
 
     def update_git_label(self):
         git_info = get_aiac_git_info()
@@ -1055,6 +1314,10 @@ class MainWindow(QMainWindow):
     def aiac_log(self, text):
         self.aiac_log_view.append(text)
         self.aiac_log_view.moveCursor(self.aiac_log_view.textCursor().End)
+
+    def log(self, text):
+        self.log_view.append(text)
+        self.log_view.moveCursor(self.log_view.textCursor().End)
 
     # --- REFRESH APP INSTALLER TABLE ---
     def refresh_table(self):
@@ -1092,25 +1355,46 @@ class MainWindow(QMainWindow):
             action_layout.addWidget(btn_uninstall)
             self.table.setCellWidget(row, 4, action_widget)
 
-    # --- REFRESH AIaC SKILLS TABLE ---
+    # --- REFRESH AIaC SKILLS TABLE (LỌC THEO BỘ LỌC) ---
     def refresh_skills_table(self):
         self.skills_table.setRowCount(0)
-        skills = scan_aiac_skills()
+        self.all_skills = scan_aiac_skills()
         
-        self.skills_table.setRowCount(len(skills))
-        for row, (name, info) in enumerate(skills.items()):
-            self.skills_table.setItem(row, 0, QTableWidgetItem(name))
+        filter_index = self.filter_combo.currentIndex()
+        filter_text = self.filter_combo.currentText()
+        
+        # Xác định nhóm cần lọc
+        target_category = ""
+        if filter_index > 0:
+            if "Mobile" in filter_text: target_category = "📱 Mobile & App"
+            elif "Odoo" in filter_text: target_category = "🐍 Odoo & Backend"
+            elif "Audit" in filter_text: target_category = "🔍 Audit & Chất lượng"
+            elif "Token" in filter_text: target_category = "⚡ Tiết kiệm Token"
+            elif "Quy trình" in filter_text: target_category = "⚙️ Quy trình & Git"
+
+        # Lọc danh sách
+        self.filtered_skill_names = []
+        for name, info in self.all_skills.items():
+            if target_category and info["category"] != target_category:
+                continue
+            self.filtered_skill_names.append(name)
+
+        self.skills_table.setRowCount(len(self.filtered_skill_names))
+        for row, name in enumerate(self.filtered_skill_names):
+            info = self.all_skills[name]
             
-            src_path_item = QTableWidgetItem(str(info["src_path"].relative_to(AIAC_DIR)))
-            src_path_item.setToolTip(str(info["src_path"]))
-            self.skills_table.setItem(row, 1, src_path_item)
+            # Tên skill
+            name_item = QTableWidgetItem(name)
+            self.skills_table.setItem(row, 0, name_item)
             
+            # Trạng thái
             status_item = QTableWidgetItem(info["status"])
             status_item.setForeground(Qt.white)
             status_item.setBackground(QApplication.palette().color(QApplication.palette().Window))
             status_item.setTextAlignment(Qt.AlignCenter)
-            self.skills_table.setItem(row, 2, status_item)
+            self.skills_table.setItem(row, 1, status_item)
             
+            # Button kích hoạt/tắt symlink
             btn_action = QPushButton()
             if info["status"] == "Đã kích hoạt":
                 btn_action.setText("Tắt")
@@ -1127,7 +1411,30 @@ class MainWindow(QMainWindow):
                 """)
                 btn_action.clicked.connect(lambda checked, n=name, src=info["src_path"]: self.activate_skill(n, src))
                 
-            self.skills_table.setCellWidget(row, 3, btn_action)
+            self.skills_table.setCellWidget(row, 2, btn_action)
+
+    # --- SỰ KIỆN CLICK CHỌN SKILL ĐỂ HIỂN THỊ MÔ TẢ (Wow 7) ---
+    def on_skill_selected(self, row, col):
+        if not (0 <= row < len(self.filtered_skill_names)):
+            return
+        name = self.filtered_skill_names[row]
+        info = self.all_skills[name]
+        
+        # Đọc file SKILL.md hoặc README.md
+        md_content = get_skill_markdown_content(info["src_path"])
+        html_content = markdown_to_html(md_content)
+        
+        # Header thông tin chung
+        header_html = f"""
+        <div style="background-color: #f8f9fa; border: 1px solid #ddd; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+            <h2 style="color: #2c3e50; margin: 0 0 6px 0;">{name}</h2>
+            <b>Phân loại nhóm:</b> <span style="color: #2980b9;">{info['category']}</span><br>
+            <b>Trạng thái Antigravity:</b> <span style="color: {info.get('color', '#2c3e50')}; font-weight: bold;">{info['status']}</span><br>
+            <b>Đường dẫn nguồn:</b> <code style="font-size: 9pt;">{info['src_path']}</code>
+        </div>
+        """
+        
+        self.detail_panel.setHtml(header_html + html_content)
 
     # --- BẬT/TẮT SYM LINK SKILL ĐƠN LẺ ---
     def activate_skill(self, name, src_path):
@@ -1150,6 +1457,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Lỗi kích hoạt", f"Không thể tạo symlink cho skill {name}: {str(e)}")
             
         self.refresh_skills_table()
+        # Click lại dòng vừa chọn để cập nhật trạng thái bên panel chi tiết
+        try:
+            row = self.filtered_skill_names.index(name)
+            self.on_skill_selected(row, 0)
+        except Exception:
+            pass
 
     def deactivate_skill(self, name):
         dst_path = GEMINI_SKILLS_DIR / name
@@ -1166,6 +1479,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Lỗi", f"Không thể xóa symlink: {str(e)}")
             
         self.refresh_skills_table()
+        try:
+            row = self.filtered_skill_names.index(name)
+            self.on_skill_selected(row, 0)
+        except Exception:
+            pass
 
     # --- CHẠY SHELL SCRIPTS DƯỚI NỀN (PULL / INSTALL / UPDATE) ---
     def start_script_worker(self, cmd, title):
