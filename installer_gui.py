@@ -1226,10 +1226,13 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_update_resource)
         tab_aiac_layout.addLayout(btn_layout)
 
-        # Bộ lọc Nhóm kỹ năng (Tester & Auto Test đã được tích hợp)
+        # Bộ lọc & Tìm kiếm kỹ năng
         filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(12)
+        
         lbl_filter = QLabel("<b>Phân loại nhóm kỹ năng:</b>", self)
         lbl_filter.setFont(QFont("Segoe UI", 10))
+        
         self.filter_combo = QComboBox(self)
         self.filter_combo.addItems([
             "Tất cả các kỹ năng",
@@ -1242,9 +1245,16 @@ class MainWindow(QMainWindow):
         ])
         self.filter_combo.setStyleSheet("padding: 6px; border: 1px solid #bdc3c7; border-radius: 6px; background-color: white;")
         self.filter_combo.currentIndexChanged.connect(self.refresh_skills_table)
+        
+        # Ô tìm kiếm nhanh (Wow 9)
+        self.search_input = QLineEdit(self)
+        self.search_input.setPlaceholderText("🔍 Tìm kiếm kỹ năng (nhập tên skill)...")
+        self.search_input.setStyleSheet("padding: 6px; border: 1px solid #bdc3c7; border-radius: 6px; background-color: white;")
+        self.search_input.textChanged.connect(self.refresh_skills_table)
+        
         filter_layout.addWidget(lbl_filter)
         filter_layout.addWidget(self.filter_combo)
-        filter_layout.addStretch()
+        filter_layout.addWidget(self.search_input)
         tab_aiac_layout.addLayout(filter_layout)
 
         # Splitter ngang chia đôi Trái (Bảng) - Phải (Mô tả chi tiết)
@@ -1334,13 +1344,14 @@ class MainWindow(QMainWindow):
             action_layout.addWidget(btn_uninstall)
             self.table.setCellWidget(row, 4, action_widget)
 
-    # --- REFRESH AIaC SKILLS TABLE (LỌC THEO BỘ LỌC) ---
+    # --- REFRESH AIaC SKILLS TABLE (LỌC THEO PHÂN LOẠI & TÌM KIẾM NHANH) ---
     def refresh_skills_table(self):
         self.skills_table.setRowCount(0)
         self.all_skills = scan_aiac_skills()
         
         filter_index = self.filter_combo.currentIndex()
         filter_text = self.filter_combo.currentText()
+        search_text = self.search_input.text().strip().lower()
         
         target_category = ""
         if filter_index > 0:
@@ -1353,7 +1364,11 @@ class MainWindow(QMainWindow):
 
         self.filtered_skill_names = []
         for name, info in self.all_skills.items():
+            # 1. Lọc theo nhóm phân loại
             if target_category and info["category"] != target_category:
+                continue
+            # 2. Lọc theo từ khóa tìm kiếm (Wow 9)
+            if search_text and search_text not in name.lower():
                 continue
             self.filtered_skill_names.append(name)
 
@@ -1444,7 +1459,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Đã tắt skill {name} thành công!", 3000)
                 send_system_notification("Gỡ bỏ Skill thành công", f"Skill '{name}' đã được ngắt kết nối.")
             else:
-                QMessageBox.warning(self, "Không thể gỡ", f"Đường dẫn '{dst_path}' không phải symlink an sau an toàn. Vui lòng kiểm tra thủ công.")
+                QMessageBox.warning(self, "Không thể gỡ", f"Đường dẫn '{dst_path}' không phải symlink an toàn. Vui lòng kiểm tra thủ công.")
         except Exception as e:
             self.aiac_log(f"[LỖI] Không thể tắt skill {name}: {str(e)}")
             QMessageBox.critical(self, "Lỗi", f"Không thể xóa symlink: {str(e)}")
