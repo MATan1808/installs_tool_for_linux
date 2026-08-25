@@ -24,17 +24,23 @@ REGISTRY_PATH = BASE_DIR / "registry.json"
 DESKTOP_DIR = Path("/home/tanma/Desktop")
 USER_APPLICATIONS_DIR = Path("/home/tanma/.local/share/applications")
 
+# Cấu hình đường dẫn AIaC và Antigravity
+AIAC_DIR = Path("/media/tanma/DATA/aiac")
+GEMINI_SKILLS_DIR = Path("/home/tanma/.gemini/config/skills")
+
 # Tạo các thư mục nếu chưa tồn tại
 APPS_DIR.mkdir(parents=True, exist_ok=True)
 DESKTOP_DIR.mkdir(parents=True, exist_ok=True)
 USER_APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
+GEMINI_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Kiểm tra thư viện PyQt5, nếu thiếu dùng zenity để thông báo trực quan
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                  QHBoxLayout, QLabel, QPushButton, QTableWidget, 
                                  QTableWidgetItem, QHeaderView, QTextEdit, QFileDialog, 
-                                 QMessageBox, QFrame, QLineEdit, QProgressBar, QMenu, QAction)
+                                 QMessageBox, QFrame, QLineEdit, QProgressBar, QMenu, 
+                                 QAction, QTabWidget, QSplitter)
     from PyQt5.QtCore import Qt, QThread, pyqtSignal
     from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QCursor
 except ImportError:
@@ -129,7 +135,6 @@ def get_app_display_size(app_id, info):
 
 # --- UTILS THÔNG BÁO HỆ THỐNG CINNAMON (WOW 2) ---
 def send_system_notification(title, message, icon_path=None):
-    """Gửi thông báo Toast chính thức lên Desktop Cinnamon"""
     try:
         cmd = ["notify-send", "-a", "Linux App Installer", title, message]
         if icon_path and os.path.exists(icon_path):
@@ -142,7 +147,6 @@ def send_system_notification(title, message, icon_path=None):
 
 # --- UTILS KHỞI CHẠY APP ĐỘC LẬP & DEBUG (WOW 3) ---
 def launch_app_by_id(app_id, debug_mode=False):
-    """Khởi chạy app ở chế độ thường hoặc Debug Log in ra Terminal riêng"""
     registry = load_registry()
     if app_id not in registry:
         return False, "Không tìm thấy ứng dụng trong cơ sở dữ liệu."
@@ -156,13 +160,10 @@ def launch_app_by_id(app_id, debug_mode=False):
         
     try:
         if debug_mode:
-            # WOW 3: Mở một cửa sổ Terminal mới chạy app và giữ lại in logs
-            # gnome-terminal là mặc định trên Linux Mint Cinnamon
             terminal_cmd = f'gnome-terminal --title="Log Debug: {app_name}" -- bash -c "{exec_path}; echo; echo \\"------------------------------\\"; echo \\"--- ỨNG DỤNG ĐÃ THOÁT ---\\"; read -p \\"Nhấn Enter để đóng cửa sổ này...\\" -n 1"'
             subprocess.Popen(shlex.split(terminal_cmd), start_new_session=True)
             return True, f"Đang khởi chạy chế độ Debug Log cho {app_name}..."
         else:
-            # Chạy chế độ thường (Detached)
             args = shlex.split(exec_path)
             subprocess.Popen(
                 args,
@@ -219,8 +220,8 @@ def get_clean_name(filepath):
 
 # --- THREAD TẢI FILE TỪ URL (WOW 1) ---
 class DownloadWorker(QThread):
-    progress_signal = pyqtSignal(int, str)  # Phát % và text thông tin tốc độ
-    finished_signal = pyqtSignal(bool, str, str)  # Thành công, message, filepath tải về
+    progress_signal = pyqtSignal(int, str)
+    finished_signal = pyqtSignal(bool, str, str)
 
     def __init__(self, url):
         super().__init__()
@@ -228,37 +229,30 @@ class DownloadWorker(QThread):
 
     def run(self):
         try:
-            # 1. Parse tên file từ URL
             url_path = urllib.parse.urlparse(self.url).path
             filename = urllib.parse.unquote(url_path.split('/')[-1])
             if not filename or '.' not in filename:
-                # Nếu link rút gọn hoặc link api, lấy tên mặc định
                 filename = "downloaded_package"
             
-            # Làm sạch filename
             filename = filename.split('?')[0].split('#')[0]
             
-            # Gửi Request
             req = urllib.request.Request(self.url, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'})
-            
             self.progress_signal.emit(0, "Đang kết nối đến máy chủ tải xuống...")
             
             with urllib.request.urlopen(req) as response:
-                # Lấy tên file thực tế từ Content-Disposition
                 cd = response.getheader('Content-Disposition')
                 if cd:
                     fname = re.findall("filename\\*?=(?:utf-8'')?([^\\s;]+)", cd)
                     if fname:
                         filename = urllib.parse.unquote(fname[0].strip('\'"'))
                 
-                # Tạo đường dẫn lưu file tạm
                 filepath = Path(tempfile.gettempdir()) / filename
                 
                 content_length = response.getheader('Content-Length')
                 total_size = int(content_length) if content_length else 0
                 
                 bytes_read = 0
-                chunk_size = 1024 * 64  # 64KB chunks
+                chunk_size = 1024 * 64
                 start_time = time.time()
                 
                 with open(filepath, 'wb') as f:
@@ -269,7 +263,6 @@ class DownloadWorker(QThread):
                         f.write(chunk)
                         bytes_read += len(chunk)
                         
-                        # Tính % và tốc độ tải
                         elapsed = time.time() - start_time
                         speed = bytes_read / elapsed if elapsed > 0 else 0
                         speed_str = format_size(speed) + "/s"
@@ -279,7 +272,7 @@ class DownloadWorker(QThread):
                             progress_text = f"Đang tải: {format_size(bytes_read)} / {format_size(total_size)} ({percent}%) - Tốc độ: {speed_str}"
                             self.progress_signal.emit(percent, progress_text)
                         else:
-                            progress_text = f"Đang tải: {format_size(bytes_read)} - Tốc độ: {speed_str} (Chưa rõ tổng dung lượng)"
+                            progress_text = f"Đang tải: {format_size(bytes_read)} - Tốc độ: {speed_str}"
                             self.progress_signal.emit(-1, progress_text)
                 
                 self.progress_signal.emit(100, f"Tải xuống hoàn tất! Đã lưu vào {filepath}")
@@ -292,7 +285,7 @@ class DownloadWorker(QThread):
 # --- THREAD CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
 class InstallWorker(QThread):
     progress_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(bool, str, str)  # Success, message, icon_path (để gửi notify)
+    finished_signal = pyqtSignal(bool, str, str)
 
     def __init__(self, filepath, is_upgrade=False):
         super().__init__()
@@ -377,7 +370,6 @@ class InstallWorker(QThread):
                     created_shortcuts.append(str(dest))
                     self.progress_signal.emit(f"Đã copy shortcut ra Desktop: {sys_desktop.name}")
                     
-                    # Cố gắng lấy icon hệ thống của gói deb để làm thông báo Toast
                     with open(sys_desktop, 'r', errors='ignore') as sf:
                         for l in sf:
                             if l.startswith("Icon="):
@@ -416,7 +408,6 @@ class InstallWorker(QThread):
         shutil.copy2(self.filepath, dest_appimage)
         dest_appimage.chmod(0o755)
         
-        # Trích xuất icon
         self.progress_signal.emit("Đang trích xuất icon từ AppImage...")
         icon_dest_path = app_dir / "icon.png"
         final_icon = "application-x-executable"
@@ -439,11 +430,9 @@ class InstallWorker(QThread):
             except Exception:
                 pass
 
-        # Tạo Shortcut
         self.progress_signal.emit("Đang tạo shortcut Desktop...")
         shortcuts = create_desktop_shortcuts(app_id, app_name, str(dest_appimage), final_icon)
 
-        # Registry
         registry = load_registry()
         registry[app_id] = {
             "name": app_name,
@@ -695,353 +684,308 @@ class InstallWorker(QThread):
         self.finished_signal.emit(True, f"Cài đặt Snap {snap_name} thành công!", icon_path)
 
 
-# --- THREAD GỠ CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
-class UninstallWorker(QThread):
-    progress_signal = pyqtSignal(str)
+# --- WORKER CHẠY LỆNH SHELL & GIT DƯỚI NỀN (QTHREAD) ---
+class ScriptWorker(QThread):
+    log_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, app_id, purge_config=False):
+    def __init__(self, cmd, cwd):
         super().__init__()
-        self.app_id = app_id
-        self.purge_config = purge_config
+        self.cmd = cmd
+        self.cwd = cwd
 
     def run(self):
-        registry = load_registry()
-        if self.app_id not in registry:
-            self.finished_signal.emit(False, "Không tìm thấy app trong registry.")
-            return
+        try:
+            proc = subprocess.Popen(
+                self.cmd,
+                cwd=str(self.cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            while True:
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
+                    break
+                if line:
+                    self.log_signal.emit(line.strip())
+            
+            proc.wait()
+            if proc.returncode == 0:
+                self.finished_signal.emit(True, "Thực thi thành công!")
+            else:
+                self.finished_signal.emit(False, f"Thực thi thất bại với mã lỗi: {proc.returncode}")
+        except Exception as e:
+            self.finished_signal.emit(False, f"Lỗi: {str(e)}")
 
-        app_info = registry[self.app_id]
-        app_name = app_info.get("name", self.app_id)
-        self.progress_signal.emit(f"Đang tiến hành gỡ bỏ ứng dụng: {app_name}")
 
-        # 1. Xóa các shortcut
-        if "desktop_files" in app_info:
-            for desk_file in app_info["desktop_files"]:
-                if os.path.exists(desk_file):
-                    try:
-                        os.remove(desk_file)
-                        self.progress_signal.emit(f"Đã xóa shortcut: {Path(desk_file).name}")
-                    except Exception:
-                        pass
-
-        # 2. Xử lý gỡ theo loại
-        app_type = app_info.get("type", "")
-        if app_type == "deb":
-            pkg_name = app_info.get("deb_package_name", self.app_id)
-            self.progress_signal.emit(f"Đang gỡ gói deb (yêu cầu mật khẩu quản trị)...")
-            try:
-                proc = subprocess.run(["pkexec", "apt-get", "remove", "-y", pkg_name], capture_output=True, text=True)
-                if proc.returncode != 0:
-                    self.finished_signal.emit(False, f"Gỡ gói deb thất bại hoặc bị hủy.\\nLog: {proc.stderr}")
-                    return
-                subprocess.run(["pkexec", "apt-get", "autoremove", "-y"], capture_output=True, text=True)
-            except Exception as e:
-                self.finished_signal.emit(False, f"Lỗi gỡ gói: {str(e)}")
-                return
+# --- SCAN AIaC SKILLS (SYM LINKS MANAGER) ---
+def scan_aiac_skills():
+    """Quét các skill nguồn AIaC và đối chiếu symlink trong Antigravity"""
+    skills = {}
+    
+    # 1. Quét trong thư mục plugins
+    plugins_dir = AIAC_DIR / "360org" / "plugins"
+    if plugins_dir.exists():
+        for item in plugins_dir.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                skills[item.name] = {
+                    "name": item.name,
+                    "src_path": item,
+                    "type": "Plugin (360org)"
+                }
                 
-        elif app_type in ["appimage", "archive"]:
-            install_path = Path(app_info["install_path"])
-            if install_path.exists() and install_path.is_dir() and install_path.parent == APPS_DIR:
-                self.progress_signal.emit(f"Đang xóa thư mục cài đặt...")
-                try:
-                    shutil.rmtree(install_path)
-                except Exception as e:
-                    self.finished_signal.emit(False, f"Không thể xóa thư mục cài đặt: {str(e)}")
-                    return
-            else:
-                self.progress_signal.emit("Bỏ qua xóa thư mục (đường dẫn hệ thống hoặc không an toàn).")
-
-        elif app_type == "flatpak":
-            flatpak_id = app_info.get("flatpak_app_id", self.app_id)
-            self.progress_signal.emit(f"Đang gỡ Flatpak ở mức user...")
-            cmd = ["flatpak", "uninstall", "--user", "-y", flatpak_id]
+    # 2. Quét trong thư mục core skills
+    skills_dir = AIAC_DIR / "skills"
+    if skills_dir.exists():
+        for item in skills_dir.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                if item.name not in skills:
+                    skills[item.name] = {
+                        "name": item.name,
+                        "src_path": item,
+                        "type": "Skill Core"
+                    }
+                    
+    # 3. Quét kiểm tra symlink
+    for name, info in skills.items():
+        dst_path = GEMINI_SKILLS_DIR / name
+        if not dst_path.exists() and not dst_path.is_symlink():
+            info["status"] = "Chưa cài đặt"
+            info["color"] = "#7f8c8d" # Màu xám
+        elif dst_path.is_symlink():
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.returncode != 0:
-                    self.finished_signal.emit(False, f"Gỡ Flatpak thất bại: {proc.stderr}")
-                    return
-            except Exception as e:
-                self.finished_signal.emit(False, f"Lỗi chạy lệnh flatpak: {str(e)}")
-                return
-
-        elif app_type == "snap":
-            snap_name = app_info.get("snap_name", self.app_id)
-            self.progress_signal.emit(f"Đang gỡ Snap (yêu cầu mật khẩu quản trị)...")
-            cmd = ["pkexec", "snap", "remove", snap_name]
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                if proc.returncode != 0:
-                    self.finished_signal.emit(False, f"Gỡ Snap thất bại hoặc bị hủy.\\nLog: {proc.stderr}")
-                    return
-            except Exception as e:
-                self.finished_signal.emit(False, f"Lỗi chạy lệnh pkexec snap: {str(e)}")
-                return
-
-        # 3. Dọn cấu hình rác ở thư mục cá nhân nếu được chọn
-        if self.purge_config:
-            self.progress_signal.emit("Đang quét dọn cấu hình rác ở thư mục cá nhân...")
-            home_config = Path("/home/tanma/.config")
-            home_local = Path("/home/tanma/.local/share")
-            home_cache = Path("/home/tanma/.cache")
-            
-            keywords = [self.app_id.lower(), app_name.lower(), app_name.lower().replace(" ", "")]
-            
-            purged_folders = []
-            for base_dir in [home_config, home_local, home_cache]:
-                if not base_dir.exists():
-                    continue
-                for item in base_dir.iterdir():
-                    if item.is_dir():
-                        item_name_lower = item.name.lower()
-                        if any(kw == item_name_lower or (len(kw) > 3 and kw in item_name_lower) for kw in keywords):
-                            if item.name not in [".", "..", "applications", "flatpak", "systemd", "menus", "trash"]:
-                                try:
-                                    shutil.rmtree(item)
-                                    purged_folders.append(str(item))
-                                    self.progress_signal.emit(f"Đã dọn dẹp: {item.relative_to('/home/tanma')}")
-                                except Exception:
-                                    pass
-            if purged_folders:
-                self.progress_signal.emit(f"Đã dọn sạch {len(purged_folders)} thư mục cấu hình rác.")
-            else:
-                self.progress_signal.emit("Không phát hiện thư mục cấu hình rác nào đáng nghi.")
-
-        # 4. Xóa khỏi registry
-        del registry[self.app_id]
-        save_registry(registry)
-        self.finished_signal.emit(True, f"Đã gỡ cài đặt hoàn chỉnh ứng dụng: {app_name}!")
-
-
-# --- WIDGET KÉO THẢ (DRAG & DROP ZONE) ---
-class DropZoneWidget(QFrame):
-    fileDropped = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
-        self.setLineWidth(2)
-        
-        self.normal_style = """
-            QFrame {
-                border: 2px dashed #3498db;
-                border-radius: 12px;
-                background-color: #ecf0f1;
-            }
-            QFrame:hover {
-                background-color: #e2e8f0;
-            }
-        """
-        self.drag_style = """
-            QFrame {
-                border: 2px dashed #2ecc71;
-                border-radius: 12px;
-                background-color: #d5f5e3;
-            }
-        """
-        self.setStyleSheet(self.normal_style)
-
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
-
-        self.label_icon = QLabel("📥", self)
-        self.label_icon.setFont(QFont("Segoe UI", 36))
-        self.label_icon.setAlignment(Qt.AlignCenter)
-        
-        self.label_text = QLabel("KÉO THẢ FILE CÀI ĐẶT VÀO ĐÂY\n(.deb, .AppImage, .zip, .tar.gz, .flatpak, .snap, .sh, .run)", self)
-        self.label_text.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        self.label_text.setStyleSheet("color: #2c3e50;")
-        self.label_text.setAlignment(Qt.AlignCenter)
-
-        self.btn_browse = QPushButton("Hoặc bấm vào đây để chọn file", self)
-        self.btn_browse.setFont(QFont("Segoe UI", 10))
-        self.btn_browse.setStyleSheet("""
-            QPushButton {
-                background-color: #3498db;
-                color: white;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-        """)
-        self.btn_browse.clicked.connect(self.select_file_dialog)
-
-        layout.addWidget(self.label_icon)
-        layout.addWidget(self.label_text)
-        layout.addWidget(self.btn_browse)
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-            self.setStyleSheet(self.drag_style)
+                target = dst_path.readlink()
+                # Resolve để so khớp tuyệt đối
+                src_resolved = info["src_path"].resolve()
+                # Link target có thể tương đối hoặc tuyệt đối
+                target_resolved = Path(os.path.normpath(os.path.join(GEMINI_SKILLS_DIR, target))).resolve()
+                
+                if src_resolved == target_resolved:
+                    info["status"] = "Đã kích hoạt"
+                    info["color"] = "#27ae60" # Màu xanh lá
+                else:
+                    info["status"] = "Xung đột (Trỏ nơi khác)"
+                    info["color"] = "#d35400" # Màu cam
+            except Exception:
+                info["status"] = "Symlink lỗi"
+                info["color"] = "#c0392b"
         else:
-            event.ignore()
+            info["status"] = "Lỗi (Thư mục vật lý)"
+            info["color"] = "#c0392b" # Màu đỏ
+            
+    return skills
 
-    def dragLeaveEvent(self, event):
-        self.setStyleSheet(self.normal_style)
-
-    def dropEvent(self, event: QDropEvent):
-        self.setStyleSheet(self.normal_style)
-        for url in event.mimeData().urls():
-            filepath = url.toLocalFile()
-            if filepath:
-                self.fileDropped.emit(filepath)
-                break
-
-    def select_file_dialog(self):
-        file_filter = "File cài đặt Linux (*.deb *.AppImage *.zip *.tar.gz *.tar.xz *.tgz *.flatpak *.flatpakref *.snap *.sh *.run);;Tất cả file (*)"
-        filepath, _ = QFileDialog.getOpenFileName(self, "Chọn file cài đặt", "/home/tanma/Downloads", file_filter)
-        if filepath:
-            self.fileDropped.emit(filepath)
+def get_aiac_git_info():
+    """Lấy thông tin commit git hiện tại của AIaC"""
+    if not (AIAC_DIR / ".git").exists():
+        return "Không phát hiện Git repo tại /media/tanma/DATA/aiac"
+    try:
+        res = subprocess.run(
+            ["git", "log", "-n", "1", "--format=%h — %s (%cd)", "--date=format:%d/%m/%Y %H:%M"],
+            cwd=str(AIAC_DIR), capture_output=True, text=True, check=True
+        )
+        return res.stdout.strip()
+    except Exception:
+        return "Không thể đọc Git log"
 
 
 # --- CỬA SỔ CHÍNH ---
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Linux App Installer Manager (AIaC 2026)")
-        self.setMinimumSize(850, 680)
+        self.setWindowTitle("Linux App & AIaC Skill Manager (AIaC 2026)")
+        self.setMinimumSize(900, 700)
         self.init_ui()
         self.refresh_table()
+        self.refresh_skills_table()
 
     def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        # Sử dụng QTabWidget phân chia giao diện
+        tab_widget = QTabWidget(self)
+        self.setCentralWidget(tab_widget)
 
+        # ==========================================
+        # TAB 1: APP INSTALLER
+        # ==========================================
+        tab_installer = QWidget()
+        tab_installer_layout = QVBoxLayout(tab_installer)
+        tab_installer_layout.setContentsMargins(15, 15, 15, 15)
+        tab_installer_layout.setSpacing(12)
+
+        # Title Tab 1
         title_label = QLabel("LINUX APP INSTALLER MANAGER", self)
-        title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
         title_label.setStyleSheet("color: #2c3e50;")
         title_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(title_label)
+        tab_installer_layout.addWidget(title_label)
 
-        # --- WOW 1: CÀI ĐẶT TRỰC TIẾP TỪ URL ---
+        # URL Input Layout
         url_layout = QHBoxLayout()
         url_layout.setSpacing(10)
-        
-        url_label = QLabel("Dán Link URL tải app:", self)
+        url_label = QLabel("Link tải trực tiếp:", self)
         url_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
-        
         self.url_input = QLineEdit(self)
         self.url_input.setPlaceholderText("https://github.com/.../vuaoffice.AppImage (Direct link tải file)...")
         self.url_input.setStyleSheet("padding: 8px; border: 1px solid #bdc3c7; border-radius: 6px; background-color: white;")
-        
         self.btn_download = QPushButton("Tải & Cài đặt", self)
         self.btn_download.setFont(QFont("Segoe UI", 10, QFont.Bold))
         self.btn_download.setStyleSheet("""
-            QPushButton {
-                background-color: #2ecc71;
-                color: white;
-                border-radius: 6px;
-                padding: 8px 18px;
-            }
-            QPushButton:hover {
-                background-color: #27ae60;
-            }
+            QPushButton { background-color: #2ecc71; color: white; border-radius: 6px; padding: 8px 18px; }
+            QPushButton:hover { background-color: #27ae60; }
         """)
         self.btn_download.clicked.connect(self.start_download)
-        
         url_layout.addWidget(url_label)
         url_layout.addWidget(self.url_input)
         url_layout.addWidget(self.btn_download)
-        main_layout.addLayout(url_layout)
+        tab_installer_layout.addLayout(url_layout)
 
-        # Progress Bar tải xuống
+        # Progress Bar
         self.download_progress = QProgressBar(self)
         self.download_progress.setRange(0, 100)
         self.download_progress.setValue(0)
         self.download_progress.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #bdc3c7;
-                border-radius: 6px;
-                text-align: center;
-                height: 20px;
-            }
-            QProgressBar::chunk {
-                background-color: #3498db;
-                border-radius: 5px;
-            }
+            QProgressBar { border: 1px solid #bdc3c7; border-radius: 6px; text-align: center; height: 20px; }
+            QProgressBar::chunk { background-color: #3498db; border-radius: 5px; }
         """)
-        self.download_progress.hide()  # Mặc định ẩn
-        main_layout.addWidget(self.download_progress)
+        self.download_progress.hide()
+        tab_installer_layout.addWidget(self.download_progress)
 
         # Drop Zone
         self.drop_zone = DropZoneWidget(self)
         self.drop_zone.fileDropped.connect(self.check_and_start_install)
-        main_layout.addWidget(self.drop_zone, stretch=2)
+        tab_installer_layout.addWidget(self.drop_zone, stretch=2)
 
-        # Log View
+        # Log View Tab 1
         self.log_view = QTextEdit(self)
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText("Trạng thái tiến trình cài đặt và tải xuống...")
-        self.log_view.setMaximumHeight(100)
+        self.log_view.setPlaceholderText("Nhật ký tiến trình cài đặt...")
+        self.log_view.setMaximumHeight(90)
         self.log_view.setStyleSheet("background-color: #2c3e50; color: #ecf0f1; font-family: Courier; border-radius: 8px; padding: 6px;")
-        main_layout.addWidget(self.log_view, stretch=1)
+        tab_installer_layout.addWidget(self.log_view, stretch=1)
 
-        list_label = QLabel("Danh sách ứng dụng đã quản lý (Double-click / Right-click dòng để có thêm tùy chọn):", self)
+        # Apps List
+        list_label = QLabel("Danh sách ứng dụng đã quản lý (Double-click / Chuột phải để mở app nhanh):", self)
         list_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        list_label.setStyleSheet("color: #2c3e50; margin-top: 5px;")
-        main_layout.addWidget(list_label)
+        tab_installer_layout.addWidget(list_label)
 
-        # Bảng danh sách app
         self.table = QTableWidget(self)
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["Tên Ứng Dụng", "Định Dạng", "Dung Lượng", "Nguồn File Cài", "Thao Tác"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents) 
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents) 
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.setStyleSheet("""
-            QTableWidget {
-                background-color: white;
-                border: 1px solid #bdc3c7;
-                border-radius: 8px;
-            }
-            QHeaderView::section {
-                background-color: #34495e;
-                color: white;
-                font-weight: bold;
-                padding: 6px;
-                border: none;
-            }
+            QTableWidget { background-color: white; border: 1px solid #bdc3c7; border-radius: 8px; }
+            QHeaderView::section { background-color: #34495e; color: white; font-weight: bold; padding: 6px; border: none; }
         """)
-        
-        # Thiết lập sự kiện Context Menu và Double-click
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
         self.table.itemDoubleClicked.connect(self.on_table_double_clicked)
+        tab_installer_layout.addWidget(self.table, stretch=3)
+
+        tab_widget.addTab(tab_installer, "📦  Trình cài đặt ứng dụng")
+
+        # ==========================================
+        # TAB 2: AIaC SKILLS MANAGER
+        # ==========================================
+        tab_aiac = QWidget()
+        tab_aiac_layout = QVBoxLayout(tab_aiac)
+        tab_aiac_layout.setContentsMargins(15, 15, 15, 15)
+        tab_aiac_layout.setSpacing(12)
+
+        # Header Git Info
+        git_header = QFrame(self)
+        git_header.setStyleSheet("background-color: #f8f9fa; border: 1px solid #e9ecef; border-radius: 8px; padding: 8px;")
+        git_header_layout = QVBoxLayout(git_header)
         
-        main_layout.addWidget(self.table, stretch=3)
+        self.lbl_git_path = QLabel(f"<b>Đường dẫn AIaC local:</b> {AIAC_DIR}", self)
+        self.lbl_git_path.setFont(QFont("Segoe UI", 10))
+        self.lbl_git_info = QLabel("<b>Commit hiện tại:</b> Đang đọc...", self)
+        self.lbl_git_info.setFont(QFont("Segoe UI", 10))
+        self.update_git_label()
+        
+        git_header_layout.addWidget(self.lbl_git_path)
+        git_header_layout.addWidget(self.lbl_git_info)
+        tab_aiac_layout.addWidget(git_header)
+
+        # Buttons Control layout
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+        
+        self.btn_git_pull = QPushButton("🔄 Kiểm tra & Pull Git", self)
+        self.btn_git_pull.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.btn_git_pull.setStyleSheet("background-color: #3498db; color: white; border-radius: 6px; padding: 8px;")
+        self.btn_git_pull.clicked.connect(self.run_git_pull)
+        
+        self.btn_sync_all = QPushButton("⚡ Đồng bộ tất cả (install-aiac)", self)
+        self.btn_sync_all.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.btn_sync_all.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 6px; padding: 8px;")
+        self.btn_sync_all.clicked.connect(self.run_install_aiac)
+        
+        self.btn_update_resource = QPushButton("📚 Cập nhật Resource", self)
+        self.btn_update_resource.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.btn_update_resource.setStyleSheet("background-color: #9b59b6; color: white; border-radius: 6px; padding: 8px;")
+        self.btn_update_resource.clicked.connect(self.run_update_resource)
+        
+        btn_layout.addWidget(self.btn_git_pull)
+        btn_layout.addWidget(self.btn_sync_all)
+        btn_layout.addWidget(self.btn_update_resource)
+        tab_aiac_layout.addLayout(btn_layout)
+
+        # Splitter phân tách bảng Skills và Log
+        splitter = QSplitter(Qt.Vertical)
+        
+        # Bảng danh sách skills
+        self.skills_table = QTableWidget(self)
+        self.skills_table.setColumnCount(4)
+        self.skills_table.setHorizontalHeaderLabels(["Tên Kỹ Năng (Skill)", "Đường Dẫn Nguồn", "Trạng Thái", "Thao Tác"])
+        self.skills_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.skills_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.skills_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.skills_table.setStyleSheet("""
+            QTableWidget { background-color: white; border: 1px solid #bdc3c7; border-radius: 8px; }
+            QHeaderView::section { background-color: #34495e; color: white; font-weight: bold; padding: 6px; border: none; }
+        """)
+        splitter.addWidget(self.skills_table)
+
+        # Log View Tab 2
+        self.aiac_log_view = QTextEdit(self)
+        self.aiac_log_view.setReadOnly(True)
+        self.aiac_log_view.setPlaceholderText("Nhật ký tiến trình đồng bộ Git & Skills sẽ hiển thị tại đây...")
+        self.aiac_log_view.setStyleSheet("background-color: #2c3e50; color: #ecf0f1; font-family: Courier; border-radius: 8px; padding: 6px;")
+        splitter.addWidget(self.aiac_log_view)
+        
+        # Set tỉ lệ mặc định cho splitter
+        splitter.setSizes([400, 150])
+        tab_aiac_layout.addWidget(splitter)
+
+        tab_widget.addTab(tab_aiac, "🤖  AIaC Skill Manager")
 
         self.statusBar().showMessage("Sẵn sàng.")
 
-    def log(self, text):
-        self.log_view.append(text)
-        self.log_view.moveCursor(self.log_view.textCursor().End)
+    def update_git_label(self):
+        git_info = get_aiac_git_info()
+        self.lbl_git_info.setText(f"<b>Commit hiện tại:</b> {git_info}")
 
+    def aiac_log(self, text):
+        self.aiac_log_view.append(text)
+        self.aiac_log_view.moveCursor(self.aiac_log_view.textCursor().End)
+
+    # --- REFRESH APP INSTALLER TABLE ---
     def refresh_table(self):
         self.table.setRowCount(0)
         registry = load_registry()
         
         self.table.setRowCount(len(registry))
         for row, (app_id, info) in enumerate(registry.items()):
-            # Tên
             self.table.setItem(row, 0, QTableWidgetItem(info.get("name", app_id)))
-            # Định dạng
             self.table.setItem(row, 1, QTableWidgetItem(info.get("type", "Không rõ").upper()))
-            # Dung lượng (Storage Tracker)
             size_str = get_app_display_size(app_id, info)
             self.table.setItem(row, 2, QTableWidgetItem(size_str))
-            # Nguồn
             self.table.setItem(row, 3, QTableWidgetItem(info.get("installed_at", "Không rõ")))
             
-            # Cột Thao tác chứa cả 2 nút: [Mở] và [Gỡ bỏ]
             action_widget = QWidget()
             action_layout = QHBoxLayout(action_widget)
             action_layout.setContentsMargins(4, 2, 4, 2)
@@ -1049,38 +993,148 @@ class MainWindow(QMainWindow):
             
             btn_launch = QPushButton("Mở")
             btn_launch.setStyleSheet("""
-                QPushButton {
-                    background-color: #2ecc71;
-                    color: white;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #27ae60;
-                }
+                QPushButton { background-color: #2ecc71; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold; }
+                QPushButton:hover { background-color: #27ae60; }
             """)
             btn_launch.clicked.connect(lambda checked, aid=app_id: self.launch_app_by_id(aid))
             
             btn_uninstall = QPushButton("Gỡ bỏ")
             btn_uninstall.setStyleSheet("""
-                QPushButton {
-                    background-color: #e74c3c;
-                    color: white;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #c0392b;
-                }
+                QPushButton { background-color: #e74c3c; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold; }
+                QPushButton:hover { background-color: #c0392b; }
             """)
             btn_uninstall.clicked.connect(lambda checked, aid=app_id: self.confirm_uninstall(aid))
             
             action_layout.addWidget(btn_launch)
             action_layout.addWidget(btn_uninstall)
-            
             self.table.setCellWidget(row, 4, action_widget)
+
+    # --- REFRESH AIaC SKILLS TABLE ---
+    def refresh_skills_table(self):
+        self.skills_table.setRowCount(0)
+        skills = scan_aiac_skills()
+        
+        self.skills_table.setRowCount(len(skills))
+        for row, (name, info) in enumerate(skills.items()):
+            # Tên skill
+            self.skills_table.setItem(row, 0, QTableWidgetItem(name))
+            
+            # Đường dẫn nguồn
+            src_path_item = QTableWidgetItem(str(info["src_path"].relative_to(AIAC_DIR)))
+            src_path_item.setToolTip(str(info["src_path"]))
+            self.skills_table.setItem(row, 1, src_path_item)
+            
+            # Trạng thái
+            status_item = QTableWidgetItem(info["status"])
+            status_item.setForeground(Qt.white)
+            status_item.setBackground(QApplication.palette().color(QApplication.palette().Window))
+            # Set background color
+            status_item.setTextAlignment(Qt.AlignCenter)
+            self.skills_table.setItem(row, 2, status_item)
+            
+            # Button kích hoạt/tắt symlink
+            btn_action = QPushButton()
+            if info["status"] == "Đã kích hoạt":
+                btn_action.setText("Tắt")
+                btn_action.setStyleSheet("""
+                    QPushButton { background-color: #e67e22; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold; }
+                    QPushButton:hover { background-color: #d35400; }
+                """)
+                btn_action.clicked.connect(lambda checked, n=name: self.deactivate_skill(n))
+            else:
+                btn_action.setText("Kích hoạt")
+                btn_action.setStyleSheet("""
+                    QPushButton { background-color: #3498db; color: white; border-radius: 4px; padding: 4px 12px; font-weight: bold; }
+                    QPushButton:hover { background-color: #2980b9; }
+                """)
+                btn_action.clicked.connect(lambda checked, n=name, src=info["src_path"]: self.activate_skill(n, src))
+                
+            self.skills_table.setCellWidget(row, 3, btn_action)
+
+    # --- BẬT/TẮT SYM LINK SKILL ĐƠN LẺ ---
+    def activate_skill(self, name, src_path):
+        dst_path = GEMINI_SKILLS_DIR / name
+        try:
+            # Dọn dẹp đích nếu đã tồn tại để tránh xung đột
+            if dst_path.exists() or dst_path.is_symlink():
+                if dst_path.is_symlink():
+                    dst_path.unlink()
+                elif dst_path.is_dir():
+                    shutil.rmtree(dst_path)
+                else:
+                    dst_path.unlink()
+            
+            # Tạo symlink
+            os.symlink(src_path, dst_path)
+            self.aiac_log(f"[OK] Đã tạo liên kết symlink cho skill: {name}")
+            self.statusBar().showMessage(f"Đã kích hoạt skill {name} thành công!", 3000)
+            
+            # Thông báo Cinnamon
+            send_system_notification("Kích hoạt Skill thành công", f"Skill '{name}' đã được liên kết vào Antigravity.")
+        except Exception as e:
+            self.aiac_log(f"[LỖI] Không thể kích hoạt skill {name}: {str(e)}")
+            QMessageBox.critical(self, "Lỗi kích hoạt", f"Không thể tạo symlink cho skill {name}: {str(e)}")
+            
+        self.refresh_skills_table()
+
+    def deactivate_skill(self, name):
+        dst_path = GEMINI_SKILLS_DIR / name
+        try:
+            if dst_path.is_symlink():
+                dst_path.unlink()
+                self.aiac_log(f"[OK] Đã gỡ liên kết symlink cho skill: {name}")
+                self.statusBar().showMessage(f"Đã tắt skill {name} thành công!", 3000)
+                send_system_notification("Gỡ bỏ Skill thành công", f"Skill '{name}' đã được ngắt kết nối.")
+            else:
+                QMessageBox.warning(self, "Không thể gỡ", f"Đường dẫn '{dst_path}' không phải symlink an toàn. Vui lòng kiểm tra thủ công.")
+        except Exception as e:
+            self.aiac_log(f"[LỖI] Không thể tắt skill {name}: {str(e)}")
+            QMessageBox.critical(self, "Lỗi", f"Không thể xóa symlink: {str(e)}")
+            
+        self.refresh_skills_table()
+
+    # --- CHẠY SHELL SCRIPTS DƯỚI NỀN (PULL / INSTALL / UPDATE) ---
+    def start_script_worker(self, cmd, title):
+        self.aiac_log_view.clear()
+        self.aiac_log(f"-> Khởi chạy: {title}")
+        
+        self.btn_git_pull.setEnabled(False)
+        self.btn_sync_all.setEnabled(False)
+        self.btn_update_resource.setEnabled(False)
+        self.statusBar().showMessage(f"Đang thực hiện {title}...")
+
+        self.script_worker = ScriptWorker(cmd, AIAC_DIR)
+        self.script_worker.log_signal.connect(self.aiac_log)
+        self.script_worker.finished_signal.connect(lambda success, msg: self.on_script_finished(success, msg, title))
+        self.script_worker.start()
+
+    def on_script_finished(self, success, message, title):
+        self.btn_git_pull.setEnabled(True)
+        self.btn_sync_all.setEnabled(True)
+        self.btn_update_resource.setEnabled(True)
+        
+        self.refresh_skills_table()
+        self.update_git_label()
+        
+        if success:
+            self.aiac_log(f"[XONG] {title} hoàn tất thành công!")
+            self.statusBar().showMessage(f"{title} thành công!")
+            send_system_notification(title, "Tiến trình đồng bộ hoàn tất thành công!")
+            QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành thành công!")
+        else:
+            self.aiac_log(f"[LỖI] {title} thất bại: {message}")
+            self.statusBar().showMessage(f"{title} thất bại.")
+            send_system_notification(f"{title} thất bại", message)
+            QMessageBox.critical(self, "Lỗi thực thi", f"{title} thất bại: {message}")
+
+    def run_git_pull(self):
+        self.start_script_worker(["git", "pull"], "Git Pull Cập nhật AIaC")
+
+    def run_install_aiac(self):
+        self.start_script_worker(["bash", "install-aiac.sh"], "Đồng bộ tất cả Skill (install-aiac.sh)")
+
+    def run_update_resource(self):
+        self.start_script_worker(["bash", "update-skills-source.sh"], "Cập nhật tài nguyên Skills (update-skills-source.sh)")
 
     # --- WOW 1: TẢI FILE TỪ URL ---
     def start_download(self):
@@ -1088,7 +1142,6 @@ class MainWindow(QMainWindow):
         if not url:
             QMessageBox.warning(self, "Thiếu liên kết", "Anh Tân vui lòng nhập hoặc dán liên kết URL tải app!")
             return
-            
         if not (url.startswith("http://") or url.startswith("https://")):
             QMessageBox.warning(self, "Liên kết không hợp lệ", "Liên kết phải bắt đầu bằng http:// hoặc https://")
             return
@@ -1096,7 +1149,6 @@ class MainWindow(QMainWindow):
         self.log_view.clear()
         self.log(f"-> Khởi tạo tải xuống từ liên kết: {url}")
         
-        # Khóa giao diện
         self.btn_download.setEnabled(False)
         self.url_input.setEnabled(False)
         self.drop_zone.setEnabled(False)
@@ -1104,7 +1156,6 @@ class MainWindow(QMainWindow):
         self.download_progress.show()
         self.statusBar().showMessage("Đang tải file từ URL...")
 
-        # Chạy thread
         self.dl_worker = DownloadWorker(url)
         self.dl_worker.progress_signal.connect(self.on_download_progress)
         self.dl_worker.finished_signal.connect(self.on_download_finished)
@@ -1124,9 +1175,7 @@ class MainWindow(QMainWindow):
         
         if success:
             self.log(f"[XONG] Tải file hoàn tất: {filepath}")
-            # Gửi Toast thông báo Cinnamon (WOW 2)
             send_system_notification("Tải xuống hoàn tất", f"Đã tải thành công file cài đặt từ liên kết về thư mục tạm.")
-            # Chuyển tiếp sang luồng cài đặt
             self.check_and_start_install(filepath)
         else:
             self.log(f"[LỖI] Tải thất bại: {message}")
@@ -1140,11 +1189,8 @@ class MainWindow(QMainWindow):
             self.log(f"[CHẠY] {message}")
             self.statusBar().showMessage(message, 3000)
             
-            # Gửi Toast thông báo Cinnamon
             registry = load_registry()
             info = registry.get(app_id, {})
-            icon = info.get("desktop_files", [""])[0] # Lấy icon tạm
-            # Tốt nhất là dùng icon trích xuất trong thư mục cài
             final_icon = ""
             if info.get("type") in ["appimage", "archive"]:
                 app_dir = Path(info.get("install_path", ""))
@@ -1167,7 +1213,6 @@ class MainWindow(QMainWindow):
         item = self.table.itemAt(pos)
         if not item:
             return
-            
         row = item.row()
         registry = load_registry()
         app_ids = list(registry.keys())
@@ -1175,16 +1220,13 @@ class MainWindow(QMainWindow):
             return
             
         app_id = app_ids[row]
-        app_name = registry[app_id].get("name", app_id)
         
-        # Tạo Menu chuột phải
         menu = QMenu(self)
         menu.setFont(QFont("Segoe UI", 10))
         
         act_run = QAction("▶️  Khởi chạy ứng dụng", self)
         act_run.triggered.connect(lambda: self.launch_app_by_id(app_id))
         
-        # WOW 3 Action
         act_debug = QAction("🐛  Chạy chế độ Debug Log (Xem Log)", self)
         act_debug.triggered.connect(lambda: self.launch_app_by_id(app_id, debug_mode=True))
         
@@ -1263,15 +1305,11 @@ class MainWindow(QMainWindow):
         if success:
             self.log(f"[XONG] {message}")
             self.statusBar().showMessage("Cài đặt thành công!")
-            
-            # Gửi Toast thông báo Cinnamon (WOW 2)
             send_system_notification("Cài đặt thành công", message, icon_path)
             QMessageBox.information(self, "Thành công", message)
         else:
             self.log(f"[THẤT BẠI] {message}")
             self.statusBar().showMessage("Cài đặt thất bại.")
-            
-            # Gửi Toast thông báo lỗi Cinnamon (WOW 2)
             send_system_notification("Cài đặt thất bại", message)
             QMessageBox.critical(self, "Lỗi cài đặt", message)
 
@@ -1315,8 +1353,6 @@ class MainWindow(QMainWindow):
         if success:
             self.log(f"[XONG] {message}")
             self.statusBar().showMessage("Gỡ cài đặt thành công!")
-            
-            # Gửi Toast thông báo Cinnamon (WOW 2)
             send_system_notification("Gỡ cài đặt thành công", message)
             QMessageBox.information(self, "Thành công", message)
         else:
