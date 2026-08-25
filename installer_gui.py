@@ -11,6 +11,7 @@ import tarfile
 import zipfile
 import re
 import math
+import shlex
 from pathlib import Path
 
 # Cấu hình đường dẫn
@@ -106,7 +107,6 @@ def get_app_display_size(app_id, info):
         size = get_dir_size(info.get("install_path", ""))
         return format_size(size)
     elif app_type == "flatpak":
-        # Đo thư mục flatpak user hoặc system
         app_id_real = info.get("flatpak_app_id", app_id)
         user_path = Path(f"/home/tanma/.local/share/flatpak/app/{app_id_real}")
         sys_path = Path(f"/var/lib/flatpak/app/{app_id_real}")
@@ -115,17 +115,41 @@ def get_app_display_size(app_id, info):
             size = get_dir_size(user_path)
         elif sys_path.exists():
             size = get_dir_size(sys_path)
-        return format_size(size) if size > 0 else "Hệ thống Flatpak"
+        return format_size(size) if size > 0 else "Flatpak"
     elif app_type == "snap":
         app_name_real = info.get("snap_name", app_id)
-        # Snap mount loop-device nên đo file snap thực tế trong thư mục snapd
         snap_file_dir = Path("/var/lib/snapd/snaps")
         size = 0
         if snap_file_dir.exists():
             for f in snap_file_dir.glob(f"{app_name_real}_*.snap"):
                 size += f.stat().st_size
-        return format_size(size) if size > 0 else "Hệ thống Snap"
+        return format_size(size) if size > 0 else "Snap"
     return "Không rõ"
+
+# --- UTILS KHỞI CHẠY ỨNG DỤNG ĐỘC LẬP (DETACHED PROCESS) ---
+def launch_app_by_id(app_id):
+    """Khởi chạy ứng dụng dưới dạng detached process độc lập"""
+    registry = load_registry()
+    if app_id not in registry:
+        return False, "Không tìm thấy ứng dụng trong cơ sở dữ liệu."
+    
+    info = registry[app_id]
+    exec_path = info.get("executable_path", "")
+    if not exec_path:
+        return False, "Không xác định được file thực thi cho ứng dụng này."
+        
+    try:
+        args = shlex.split(exec_path)
+        # Chạy detached process độc lập hoàn toàn với app chính
+        subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
+        )
+        return True, f"Khởi chạy thành công: {info.get('name', app_id)}"
+    except Exception as e:
+        return False, f"Lỗi khi chạy app: {str(e)}"
 
 # --- UTILS SHORTCUT (.DESKTOP) ---
 def make_desktop_file_trusted(desktop_path):
@@ -163,7 +187,6 @@ Comment=Cài đặt thông qua Linux App Installer Manager
 
 def get_clean_name(filepath):
     name = Path(filepath).stem
-    # Tẩy phiên bản và hậu tố hệ thống
     name = re.sub(r'[-_]v?\d+\.\d+.*$', '', name, flags=re.IGNORECASE)
     name = re.sub(r'[-_]amd64$', '', name, flags=re.IGNORECASE)
     name = re.sub(r'[-_]x86_64$', '', name, flags=re.IGNORECASE)
@@ -222,7 +245,6 @@ class InstallWorker(QThread):
             self.finished_signal.emit(False, "Không thể lấy tên gói từ file .deb")
             return
 
-        # Thực thi cài đặt bằng pkexec
         cmd = ["pkexec", "apt-get", "install", "-y", str(self.filepath)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -234,7 +256,6 @@ class InstallWorker(QThread):
             self.finished_signal.emit(False, f"Lỗi khi chạy lệnh pkexec: {str(e)}")
             return
 
-        # Tìm shortcut hệ thống vừa sinh ra
         desktop_files = []
         try:
             list_result = subprocess.run(["dpkg", "-L", pkg_name], capture_output=True, text=True, check=True)
@@ -261,7 +282,6 @@ class InstallWorker(QThread):
                 except Exception as e:
                     self.progress_signal.emit(f"Lỗi copy shortcut: {str(e)}")
 
-        # Lưu registry
         registry = load_registry()
         registry[pkg_name] = {
             "name": pkg_name,
@@ -292,7 +312,6 @@ class InstallWorker(QThread):
         shutil.copy2(self.filepath, dest_appimage)
         dest_appimage.chmod(0o755)
         
-        # Trích xuất icon
         self.progress_signal.emit("Đang trích xuất icon từ AppImage...")
         icon_dest_path = app_dir / "icon.png"
         final_icon = "application-x-executable"
@@ -315,11 +334,9 @@ class InstallWorker(QThread):
             except Exception:
                 pass
 
-        # Tạo Shortcut
         self.progress_signal.emit("Đang tạo shortcut Desktop...")
         shortcuts = create_desktop_shortcuts(app_id, app_name, str(dest_appimage), final_icon)
 
-        # Registry
         registry = load_registry()
         registry[app_id] = {
             "name": app_name,
@@ -439,8 +456,6 @@ class InstallWorker(QThread):
 
     def install_flatpak(self):
         self.progress_signal.emit(f"Đang cài đặt gói Flatpak: {self.filepath.name}")
-        
-        # Cài đặt mức user để không cần sudo
         cmd = ["flatpak", "install", "--user", "-y", str(self.filepath)]
         self.progress_signal.emit("Đang chạy lệnh cài đặt Flatpak ở mức user...")
         try:
@@ -452,10 +467,8 @@ class InstallWorker(QThread):
             self.finished_signal.emit(False, f"Lỗi thực thi lệnh flatpak: {str(e)}")
             return
 
-        # Nhận diện Flatpak App ID
         app_id_real = ""
         if self.filepath.name.endswith(".flatpakref"):
-            # Đọc file flatpakref để tìm Name (App ID)
             try:
                 with open(self.filepath, "r", encoding="utf-8") as f:
                     for line in f:
@@ -466,11 +479,9 @@ class InstallWorker(QThread):
                 pass
 
         if not app_id_real:
-            # Quét danh sách flatpak list để tìm app mới cài
             try:
                 list_proc = subprocess.run(["flatpak", "list", "--columns=application"], capture_output=True, text=True)
                 apps = [line.strip() for line in list_proc.stdout.splitlines() if line.strip()]
-                # Chọn app phù hợp nhất với tên file
                 clean_name = get_clean_name(self.filepath).lower()
                 for app in apps:
                     if clean_name in app.lower():
@@ -482,7 +493,6 @@ class InstallWorker(QThread):
         if not app_id_real:
             app_id_real = get_clean_name(self.filepath).lower()
 
-        # Tìm shortcut flatpak xuất ra ở user applications
         flatpak_desktop_dir = Path("/home/tanma/.local/share/flatpak/exports/share/applications")
         desktop_files = []
         if flatpak_desktop_dir.exists():
@@ -519,7 +529,6 @@ class InstallWorker(QThread):
         self.progress_signal.emit(f"Đang cài đặt gói Snap: {self.filepath.name}")
         self.progress_signal.emit("Yêu cầu mật khẩu quản trị (PolicyKit)...")
         
-        # Cài snap offline cần cờ --dangerous
         cmd = ["pkexec", "snap", "install", "--dangerous", str(self.filepath)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -532,7 +541,6 @@ class InstallWorker(QThread):
 
         snap_name = get_clean_name(self.filepath).lower()
         
-        # Tìm shortcut snap
         snap_desktop_dir = Path("/var/lib/snapd/desktop/applications")
         desktop_files = []
         if snap_desktop_dir.exists():
@@ -656,9 +664,7 @@ class UninstallWorker(QThread):
             home_local = Path("/home/tanma/.local/share")
             home_cache = Path("/home/tanma/.cache")
             
-            # Khớp từ khóa tìm các thư mục liên quan
             keywords = [self.app_id.lower(), app_name.lower(), app_name.lower().replace(" ", "")]
-            # Thêm các ký tự thường gặp khi viết thường/viết liền
             
             purged_folders = []
             for base_dir in [home_config, home_local, home_cache]:
@@ -667,9 +673,7 @@ class UninstallWorker(QThread):
                 for item in base_dir.iterdir():
                     if item.is_dir():
                         item_name_lower = item.name.lower()
-                        # Kiểm tra xem tên thư mục có khớp hoàn toàn hoặc chứa từ khóa
                         if any(kw == item_name_lower or (len(kw) > 3 and kw in item_name_lower) for kw in keywords):
-                            # Không xóa nhầm các thư mục hệ thống cực kỳ quan trọng
                             if item.name not in [".", "..", "applications", "flatpak", "systemd", "menus", "trash"]:
                                 try:
                                     shutil.rmtree(item)
@@ -810,18 +814,18 @@ class MainWindow(QMainWindow):
         self.log_view.setStyleSheet("background-color: #2c3e50; color: #ecf0f1; font-family: Courier; border-radius: 8px; padding: 6px;")
         main_layout.addWidget(self.log_view, stretch=1)
 
-        list_label = QLabel("Danh sách ứng dụng đã quản lý:", self)
+        list_label = QLabel("Danh sách ứng dụng đã quản lý (Double-click dòng để mở app nhanh):", self)
         list_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         list_label.setStyleSheet("color: #2c3e50; margin-top: 5px;")
         main_layout.addWidget(list_label)
 
-        # Bảng danh sách app (Thêm cột Dung lượng)
+        # Bảng danh sách app
         self.table = QTableWidget(self)
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["Tên Ứng Dụng", "Định Dạng", "Dung Lượng", "Nguồn File Cài", "Thao Tác"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents) # Dung lượng
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents) # Thao tác
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents) 
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents) 
         self.table.setStyleSheet("""
             QTableWidget {
                 background-color: white;
@@ -836,6 +840,9 @@ class MainWindow(QMainWindow):
                 border: none;
             }
         """)
+        # Kết nối sự kiện click đúp dòng trong bảng để chạy app
+        self.table.itemDoubleClicked.connect(self.on_table_double_clicked)
+        
         main_layout.addWidget(self.table, stretch=3)
 
         self.statusBar().showMessage("Sẵn sàng.")
@@ -860,7 +867,29 @@ class MainWindow(QMainWindow):
             # Nguồn
             self.table.setItem(row, 3, QTableWidgetItem(info.get("installed_at", "Không rõ")))
             
-            # Nút gỡ
+            # Cột Thao tác chứa cả 2 nút: [Mở] và [Gỡ bỏ]
+            action_widget = QWidget()
+            action_layout = QHBoxLayout(action_widget)
+            action_layout.setContentsMargins(4, 2, 4, 2)
+            action_layout.setSpacing(6)
+            
+            # Nút Mở (Màu xanh dương)
+            btn_launch = QPushButton("Mở")
+            btn_launch.setStyleSheet("""
+                QPushButton {
+                    background-color: #2ecc71;
+                    color: white;
+                    border-radius: 4px;
+                    padding: 4px 12px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #27ae60;
+                }
+            """)
+            btn_launch.clicked.connect(lambda checked, aid=app_id: self.launch_app_by_id(aid))
+            
+            # Nút Gỡ
             btn_uninstall = QPushButton("Gỡ bỏ")
             btn_uninstall.setStyleSheet("""
                 QPushButton {
@@ -875,7 +904,29 @@ class MainWindow(QMainWindow):
                 }
             """)
             btn_uninstall.clicked.connect(lambda checked, aid=app_id: self.confirm_uninstall(aid))
-            self.table.setCellWidget(row, 4, btn_uninstall)
+            
+            action_layout.addWidget(btn_launch)
+            action_layout.addWidget(btn_uninstall)
+            
+            self.table.setCellWidget(row, 4, action_widget)
+
+    # --- KHỞI CHẠY APP ---
+    def launch_app_by_id(self, app_id):
+        success, message = launch_app_by_id(app_id)
+        if success:
+            self.log(f"[CHẠY] {message}")
+            self.statusBar().showMessage(message, 3000)
+        else:
+            self.log(f"[LỖI] {message}")
+            QMessageBox.critical(self, "Lỗi khởi chạy", message)
+
+    def on_table_double_clicked(self, item):
+        row = item.row()
+        registry = load_registry()
+        app_ids = list(registry.keys())
+        if 0 <= row < len(app_ids):
+            app_id = app_ids[row]
+            self.launch_app_by_id(app_id)
 
     # --- KIỂM TRA TRÙNG LẶP & SMART UPDATE ---
     def check_and_start_install(self, filepath):
@@ -883,10 +934,8 @@ class MainWindow(QMainWindow):
         app_name = get_clean_name(path)
         app_id = app_name.lower().replace(" ", "_")
         
-        # Một số định dạng dùng app_id khác
         filename = path.name.lower()
         if filename.endswith(".deb"):
-            # Đối với deb ta parse tên từ file deb trước để tránh trùng lặp chính xác
             try:
                 res = subprocess.run(["dpkg", "-I", str(path)], capture_output=True, text=True, check=True)
                 for line in res.stdout.splitlines():
@@ -956,7 +1005,6 @@ class MainWindow(QMainWindow):
         app_info = registry.get(app_id, {})
         app_name = app_info.get("name", app_id)
         
-        # Hỏi gỡ app
         reply = QMessageBox.question(
             self, "Xác nhận gỡ bỏ", 
             f"Anh Tân có chắc chắn muốn gỡ cài đặt ứng dụng '{app_name}' không?",
@@ -964,7 +1012,6 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.Yes:
-            # Hỏi thêm dọn cấu hình rác (Purge Config Data)
             purge_reply = QMessageBox.question(
                 self, "Dọn dẹp cấu hình rác",
                 f"Anh Tân có muốn dọn sạch dữ liệu cấu hình cá nhân của '{app_name}' (~/.config, ~/.local/share, ~/.cache) không?\\n\\n"
