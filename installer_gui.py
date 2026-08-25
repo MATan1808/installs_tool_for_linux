@@ -1478,7 +1478,7 @@ class MainWindow(QMainWindow):
             "• <b>Đồng bộ tất cả</b>: Kích hoạt liên kết hàng loạt tất cả skill vào thư mục config Antigravity.",
             self
         )
-        lbl_help_desc.setFont(QFont("DejaVu Sans", 8.5))
+        lbl_help_desc.setFont(QFont("DejaVu Sans", 9))
         lbl_help_desc.setStyleSheet("color: #1e3a8a; border: none;")
         lbl_help_desc.setWordWrap(True)
         
@@ -1494,11 +1494,11 @@ class MainWindow(QMainWindow):
         git_header_layout.setContentsMargins(6, 4, 6, 4)
         
         self.lbl_git_path = QLabel(f"<b>Đường dẫn AIaC local:</b> {AIAC_DIR}", self)
-        self.lbl_git_path.setFont(QFont("DejaVu Sans", 9.5))
+        self.lbl_git_path.setFont(QFont("DejaVu Sans", 10))
         self.lbl_git_path.setStyleSheet("color: #334155; border: none;")
         
         self.lbl_git_info = QLabel("<b>Commit hiện tại:</b> Đang đọc...", self)
-        self.lbl_git_info.setFont(QFont("DejaVu Sans", 9.5))
+        self.lbl_git_info.setFont(QFont("DejaVu Sans", 10))
         self.lbl_git_info.setStyleSheet("color: #334155; border: none;")
         self.update_git_label()
         
@@ -1511,7 +1511,7 @@ class MainWindow(QMainWindow):
         btn_layout.setSpacing(10)
         
         self.btn_git_pull = QPushButton("Kiểm tra & Pull Git", self)
-        self.btn_git_pull.setFont(QFont("DejaVu Sans", 9.5, QFont.Bold))
+        self.btn_git_pull.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_git_pull.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_git_pull.setStyleSheet("""
             QPushButton { background-color: #3b82f6; color: #ffffff; border-radius: 8px; padding: 9px 16px; border: none; font-weight: bold; }
@@ -1521,7 +1521,7 @@ class MainWindow(QMainWindow):
         self.btn_git_pull.clicked.connect(self.run_git_pull)
         
         self.btn_sync_all = QPushButton("Đồng bộ tất cả (install-aiac)", self)
-        self.btn_sync_all.setFont(QFont("DejaVu Sans", 9.5, QFont.Bold))
+        self.btn_sync_all.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_sync_all.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_sync_all.setStyleSheet("""
             QPushButton { background-color: #10b981; color: #ffffff; border-radius: 8px; padding: 9px 16px; border: none; font-weight: bold; }
@@ -1531,7 +1531,7 @@ class MainWindow(QMainWindow):
         self.btn_sync_all.clicked.connect(self.run_install_aiac)
         
         self.btn_update_resource = QPushButton("Cập nhật Resource", self)
-        self.btn_update_resource.setFont(QFont("DejaVu Sans", 9.5, QFont.Bold))
+        self.btn_update_resource.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_update_resource.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_update_resource.setStyleSheet("""
             QPushButton { background-color: #8b5cf6; color: #ffffff; border-radius: 8px; padding: 9px 16px; border: none; font-weight: bold; }
