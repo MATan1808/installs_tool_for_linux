@@ -12,6 +12,9 @@ import zipfile
 import re
 import math
 import shlex
+import urllib.request
+import urllib.parse
+import time
 from pathlib import Path
 
 # Cấu hình đường dẫn
@@ -31,9 +34,9 @@ try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                  QHBoxLayout, QLabel, QPushButton, QTableWidget, 
                                  QTableWidgetItem, QHeaderView, QTextEdit, QFileDialog, 
-                                 QMessageBox, QFrame)
+                                 QMessageBox, QFrame, QLineEdit, QProgressBar, QMenu, QAction)
     from PyQt5.QtCore import Qt, QThread, pyqtSignal
-    from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont
+    from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QCursor
 except ImportError:
     error_msg = ("Ứng dụng Linux App Installer yêu cầu thư viện PyQt5.\\n\\n"
                  "Anh Tân vui lòng mở terminal và chạy lệnh sau để cài đặt:\\n"
@@ -60,7 +63,6 @@ def save_registry(registry):
 
 # --- UTILS ĐO DUNG LƯỢNG (STORAGE TRACKER) ---
 def get_dir_size(path):
-    """Tính tổng dung lượng thư mục hoặc file (bytes)"""
     total_size = 0
     try:
         path = Path(path)
@@ -76,7 +78,6 @@ def get_dir_size(path):
     return total_size
 
 def get_deb_installed_size(pkg_name):
-    """Truy vấn dung lượng đã cài đặt của gói deb qua dpkg (bytes)"""
     try:
         result = subprocess.run(
             ["dpkg-query", "-W", "-f=${Installed-Size}\\n", pkg_name],
@@ -88,9 +89,10 @@ def get_deb_installed_size(pkg_name):
         return 0
 
 def format_size(size_bytes):
-    """Format dung lượng sang dạng trực quan (KB, MB, GB)"""
     if size_bytes <= 0:
         return "N/A"
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
     size_name = ("B", "KB", "MB", "GB", "TB")
     i = int(math.floor(math.log(size_bytes, 1024)))
     p = math.pow(1024, i)
@@ -98,7 +100,6 @@ def format_size(size_bytes):
     return f"{s} {size_name[i]}"
 
 def get_app_display_size(app_id, info):
-    """Lấy dung lượng hiển thị của app dựa theo loại"""
     app_type = info.get("type", "")
     if app_type == "deb":
         size = get_deb_installed_size(info.get("deb_package_name", app_id))
@@ -126,28 +127,50 @@ def get_app_display_size(app_id, info):
         return format_size(size) if size > 0 else "Snap"
     return "Không rõ"
 
-# --- UTILS KHỞI CHẠY ỨNG DỤNG ĐỘC LẬP (DETACHED PROCESS) ---
-def launch_app_by_id(app_id):
-    """Khởi chạy ứng dụng dưới dạng detached process độc lập"""
+# --- UTILS THÔNG BÁO HỆ THỐNG CINNAMON (WOW 2) ---
+def send_system_notification(title, message, icon_path=None):
+    """Gửi thông báo Toast chính thức lên Desktop Cinnamon"""
+    try:
+        cmd = ["notify-send", "-a", "Linux App Installer", title, message]
+        if icon_path and os.path.exists(icon_path):
+            cmd.extend(["-i", str(icon_path)])
+        else:
+            cmd.extend(["-i", "system-software-install"])
+        subprocess.run(cmd, check=False)
+    except Exception:
+        pass
+
+# --- UTILS KHỞI CHẠY APP ĐỘC LẬP & DEBUG (WOW 3) ---
+def launch_app_by_id(app_id, debug_mode=False):
+    """Khởi chạy app ở chế độ thường hoặc Debug Log in ra Terminal riêng"""
     registry = load_registry()
     if app_id not in registry:
         return False, "Không tìm thấy ứng dụng trong cơ sở dữ liệu."
     
     info = registry[app_id]
     exec_path = info.get("executable_path", "")
+    app_name = info.get("name", app_id)
+    
     if not exec_path:
         return False, "Không xác định được file thực thi cho ứng dụng này."
         
     try:
-        args = shlex.split(exec_path)
-        # Chạy detached process độc lập hoàn toàn với app chính
-        subprocess.Popen(
-            args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True
-        )
-        return True, f"Khởi chạy thành công: {info.get('name', app_id)}"
+        if debug_mode:
+            # WOW 3: Mở một cửa sổ Terminal mới chạy app và giữ lại in logs
+            # gnome-terminal là mặc định trên Linux Mint Cinnamon
+            terminal_cmd = f'gnome-terminal --title="Log Debug: {app_name}" -- bash -c "{exec_path}; echo; echo \\"------------------------------\\"; echo \\"--- ỨNG DỤNG ĐÃ THOÁT ---\\"; read -p \\"Nhấn Enter để đóng cửa sổ này...\\" -n 1"'
+            subprocess.Popen(shlex.split(terminal_cmd), start_new_session=True)
+            return True, f"Đang khởi chạy chế độ Debug Log cho {app_name}..."
+        else:
+            # Chạy chế độ thường (Detached)
+            args = shlex.split(exec_path)
+            subprocess.Popen(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            return True, f"Khởi chạy thành công: {app_name}"
     except Exception as e:
         return False, f"Lỗi khi chạy app: {str(e)}"
 
@@ -193,10 +216,83 @@ def get_clean_name(filepath):
     name = re.sub(r'[-_]linux$', '', name, flags=re.IGNORECASE)
     return name
 
+
+# --- THREAD TẢI FILE TỪ URL (WOW 1) ---
+class DownloadWorker(QThread):
+    progress_signal = pyqtSignal(int, str)  # Phát % và text thông tin tốc độ
+    finished_signal = pyqtSignal(bool, str, str)  # Thành công, message, filepath tải về
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url.strip()
+
+    def run(self):
+        try:
+            # 1. Parse tên file từ URL
+            url_path = urllib.parse.urlparse(self.url).path
+            filename = urllib.parse.unquote(url_path.split('/')[-1])
+            if not filename or '.' not in filename:
+                # Nếu link rút gọn hoặc link api, lấy tên mặc định
+                filename = "downloaded_package"
+            
+            # Làm sạch filename
+            filename = filename.split('?')[0].split('#')[0]
+            
+            # Gửi Request
+            req = urllib.request.Request(self.url, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'})
+            
+            self.progress_signal.emit(0, "Đang kết nối đến máy chủ tải xuống...")
+            
+            with urllib.request.urlopen(req) as response:
+                # Lấy tên file thực tế từ Content-Disposition
+                cd = response.getheader('Content-Disposition')
+                if cd:
+                    fname = re.findall("filename\\*?=(?:utf-8'')?([^\\s;]+)", cd)
+                    if fname:
+                        filename = urllib.parse.unquote(fname[0].strip('\'"'))
+                
+                # Tạo đường dẫn lưu file tạm
+                filepath = Path(tempfile.gettempdir()) / filename
+                
+                content_length = response.getheader('Content-Length')
+                total_size = int(content_length) if content_length else 0
+                
+                bytes_read = 0
+                chunk_size = 1024 * 64  # 64KB chunks
+                start_time = time.time()
+                
+                with open(filepath, 'wb') as f:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        bytes_read += len(chunk)
+                        
+                        # Tính % và tốc độ tải
+                        elapsed = time.time() - start_time
+                        speed = bytes_read / elapsed if elapsed > 0 else 0
+                        speed_str = format_size(speed) + "/s"
+                        
+                        if total_size > 0:
+                            percent = int(bytes_read * 100 / total_size)
+                            progress_text = f"Đang tải: {format_size(bytes_read)} / {format_size(total_size)} ({percent}%) - Tốc độ: {speed_str}"
+                            self.progress_signal.emit(percent, progress_text)
+                        else:
+                            progress_text = f"Đang tải: {format_size(bytes_read)} - Tốc độ: {speed_str} (Chưa rõ tổng dung lượng)"
+                            self.progress_signal.emit(-1, progress_text)
+                
+                self.progress_signal.emit(100, f"Tải xuống hoàn tất! Đã lưu vào {filepath}")
+                self.finished_signal.emit(True, "Tải file từ URL thành công!", str(filepath))
+                
+        except Exception as e:
+            self.finished_signal.emit(False, f"Lỗi khi tải file: {str(e)}", "")
+
+
 # --- THREAD CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
 class InstallWorker(QThread):
     progress_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal(bool, str)
+    finished_signal = pyqtSignal(bool, str, str)  # Success, message, icon_path (để gửi notify)
 
     def __init__(self, filepath, is_upgrade=False):
         super().__init__()
@@ -219,9 +315,9 @@ class InstallWorker(QThread):
             elif filename.endswith(".snap"):
                 self.install_snap()
             else:
-                self.finished_signal.emit(False, "Định dạng file không được hỗ trợ!")
+                self.finished_signal.emit(False, "Định dạng file không được hỗ trợ!", "")
         except Exception as e:
-            self.finished_signal.emit(False, f"Lỗi xảy ra trong quá trình cài đặt: {str(e)}")
+            self.finished_signal.emit(False, f"Lỗi xảy ra trong quá trình cài đặt: {str(e)}", "")
 
     def install_deb(self):
         self.progress_signal.emit(f"Đang cài đặt gói Debian (.deb): {self.filepath.name}")
@@ -238,22 +334,22 @@ class InstallWorker(QThread):
                 elif line.startswith("Version:"):
                     version = line.split(":", 1)[1].strip()
         except Exception as e:
-            self.finished_signal.emit(False, f"Không thể đọc thông tin file .deb: {str(e)}")
+            self.finished_signal.emit(False, f"Không thể đọc thông tin file .deb: {str(e)}", "")
             return
 
         if not pkg_name:
-            self.finished_signal.emit(False, "Không thể lấy tên gói từ file .deb")
+            self.finished_signal.emit(False, "Không thể lấy tên gói từ file .deb", "")
             return
 
         cmd = ["pkexec", "apt-get", "install", "-y", str(self.filepath)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
-                self.finished_signal.emit(False, f"Cài đặt thất bại hoặc bị hủy.\\nLog: {proc.stderr}")
+                self.finished_signal.emit(False, f"Cài đặt thất bại hoặc bị hủy.\\nLog: {proc.stderr}", "")
                 return
             self.progress_signal.emit(f"Đã cài đặt gói {pkg_name} ({version})")
         except Exception as e:
-            self.finished_signal.emit(False, f"Lỗi khi chạy lệnh pkexec: {str(e)}")
+            self.finished_signal.emit(False, f"Lỗi khi chạy lệnh pkexec: {str(e)}", "")
             return
 
         desktop_files = []
@@ -271,6 +367,7 @@ class InstallWorker(QThread):
                     desktop_files.append(f)
 
         created_shortcuts = []
+        icon_path = ""
         if desktop_files:
             for sys_desktop in desktop_files:
                 dest = DESKTOP_DIR / sys_desktop.name
@@ -279,6 +376,13 @@ class InstallWorker(QThread):
                     make_desktop_file_trusted(dest)
                     created_shortcuts.append(str(dest))
                     self.progress_signal.emit(f"Đã copy shortcut ra Desktop: {sys_desktop.name}")
+                    
+                    # Cố gắng lấy icon hệ thống của gói deb để làm thông báo Toast
+                    with open(sys_desktop, 'r', errors='ignore') as sf:
+                        for l in sf:
+                            if l.startswith("Icon="):
+                                icon_path = l.split("=", 1)[1].strip()
+                                break
                 except Exception as e:
                     self.progress_signal.emit(f"Lỗi copy shortcut: {str(e)}")
 
@@ -293,7 +397,7 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Đã cài đặt gói {pkg_name} thành công!")
+        self.finished_signal.emit(True, f"Đã cài đặt gói {pkg_name} thành công!", icon_path)
 
     def install_appimage(self):
         self.progress_signal.emit(f"Đang cài đặt AppImage: {self.filepath.name}")
@@ -312,6 +416,7 @@ class InstallWorker(QThread):
         shutil.copy2(self.filepath, dest_appimage)
         dest_appimage.chmod(0o755)
         
+        # Trích xuất icon
         self.progress_signal.emit("Đang trích xuất icon từ AppImage...")
         icon_dest_path = app_dir / "icon.png"
         final_icon = "application-x-executable"
@@ -334,9 +439,11 @@ class InstallWorker(QThread):
             except Exception:
                 pass
 
+        # Tạo Shortcut
         self.progress_signal.emit("Đang tạo shortcut Desktop...")
         shortcuts = create_desktop_shortcuts(app_id, app_name, str(dest_appimage), final_icon)
 
+        # Registry
         registry = load_registry()
         registry[app_id] = {
             "name": app_name,
@@ -347,7 +454,7 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Đã cài đặt/cập nhật ứng dụng {app_name} thành công!")
+        self.finished_signal.emit(True, f"Đã cài đặt ứng dụng {app_name} thành công!", final_icon)
 
     def install_archive(self):
         self.progress_signal.emit(f"Đang cài đặt gói nén: {self.filepath.name}")
@@ -371,7 +478,7 @@ class InstallWorker(QThread):
                 with tarfile.open(self.filepath, mode) as tar_ref:
                     tar_ref.extractall(app_dir)
         except Exception as e:
-            self.finished_signal.emit(False, f"Giải nén thất bại: {str(e)}")
+            self.finished_signal.emit(False, f"Giải nén thất bại: {str(e)}", "")
             return
 
         self.progress_signal.emit("Đang tìm kiếm file chạy chính...")
@@ -395,7 +502,7 @@ class InstallWorker(QThread):
                     icons.append(file_path)
 
         if not executables:
-            self.finished_signal.emit(False, f"Không tìm thấy file chạy chính nào.")
+            self.finished_signal.emit(False, f"Không tìm thấy file chạy chính nào.", "")
             return
 
         exec_path = None
@@ -426,7 +533,7 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Đã cài đặt/cập nhật gói nén {app_name} thành công!")
+        self.finished_signal.emit(True, f"Đã cài đặt gói nén {app_name} thành công!", icon_path)
 
     def install_script(self):
         self.progress_signal.emit(f"Đang chạy script: {self.filepath.name}")
@@ -435,10 +542,10 @@ class InstallWorker(QThread):
         try:
             proc = subprocess.run([str(self.filepath)], capture_output=True, text=True)
             if proc.returncode != 0:
-                self.finished_signal.emit(False, f"Script lỗi: {proc.stderr}")
+                self.finished_signal.emit(False, f"Script lỗi: {proc.stderr}", "")
                 return
         except Exception as e:
-            self.finished_signal.emit(False, f"Lỗi chạy script: {str(e)}")
+            self.finished_signal.emit(False, f"Lỗi chạy script: {str(e)}", "")
             return
 
         app_id = self.filepath.stem.lower().replace(" ", "_")
@@ -452,7 +559,7 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Script cài đặt đã hoàn thành thành công!")
+        self.finished_signal.emit(True, f"Script cài đặt đã hoàn thành thành công!", "")
 
     def install_flatpak(self):
         self.progress_signal.emit(f"Đang cài đặt gói Flatpak: {self.filepath.name}")
@@ -461,10 +568,10 @@ class InstallWorker(QThread):
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
-                self.finished_signal.emit(False, f"Cài đặt Flatpak lỗi: {proc.stderr}")
+                self.finished_signal.emit(False, f"Cài đặt Flatpak lỗi: {proc.stderr}", "")
                 return
         except Exception as e:
-            self.finished_signal.emit(False, f"Lỗi thực thi lệnh flatpak: {str(e)}")
+            self.finished_signal.emit(False, f"Lỗi thực thi lệnh flatpak: {str(e)}", "")
             return
 
         app_id_real = ""
@@ -501,6 +608,7 @@ class InstallWorker(QThread):
                     desktop_files.append(f)
 
         created_shortcuts = []
+        icon_path = ""
         if desktop_files:
             for sys_desktop in desktop_files:
                 dest = DESKTOP_DIR / sys_desktop.name
@@ -509,6 +617,12 @@ class InstallWorker(QThread):
                     make_desktop_file_trusted(dest)
                     created_shortcuts.append(str(dest))
                     self.progress_signal.emit(f"Đã tạo shortcut Desktop: {sys_desktop.name}")
+                    
+                    with open(sys_desktop, 'r', errors='ignore') as sf:
+                        for l in sf:
+                            if l.startswith("Icon="):
+                                icon_path = l.split("=", 1)[1].strip()
+                                break
                 except Exception:
                     pass
 
@@ -523,7 +637,7 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Cài đặt Flatpak {get_clean_name(self.filepath)} thành công!")
+        self.finished_signal.emit(True, f"Cài đặt Flatpak {get_clean_name(self.filepath)} thành công!", icon_path)
 
     def install_snap(self):
         self.progress_signal.emit(f"Đang cài đặt gói Snap: {self.filepath.name}")
@@ -533,10 +647,10 @@ class InstallWorker(QThread):
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
-                self.finished_signal.emit(False, f"Cài đặt Snap lỗi hoặc bị hủy.\\nLog: {proc.stderr}")
+                self.finished_signal.emit(False, f"Cài đặt Snap lỗi hoặc bị hủy.\\nLog: {proc.stderr}", "")
                 return
         except Exception as e:
-            self.finished_signal.emit(False, f"Lỗi khi chạy lệnh pkexec snap: {str(e)}")
+            self.finished_signal.emit(False, f"Lỗi khi chạy lệnh pkexec snap: {str(e)}", "")
             return
 
         snap_name = get_clean_name(self.filepath).lower()
@@ -549,6 +663,7 @@ class InstallWorker(QThread):
                     desktop_files.append(f)
 
         created_shortcuts = []
+        icon_path = ""
         if desktop_files:
             for sys_desktop in desktop_files:
                 dest = DESKTOP_DIR / sys_desktop.name
@@ -557,6 +672,12 @@ class InstallWorker(QThread):
                     make_desktop_file_trusted(dest)
                     created_shortcuts.append(str(dest))
                     self.progress_signal.emit(f"Đã tạo shortcut Desktop: {sys_desktop.name}")
+                    
+                    with open(sys_desktop, 'r', errors='ignore') as sf:
+                        for l in sf:
+                            if l.startswith("Icon="):
+                                icon_path = l.split("=", 1)[1].strip()
+                                break
                 except Exception:
                     pass
 
@@ -571,7 +692,7 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Cài đặt Snap {snap_name} thành công!")
+        self.finished_signal.emit(True, f"Cài đặt Snap {snap_name} thành công!", icon_path)
 
 
 # --- THREAD GỠ CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
@@ -783,7 +904,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Linux App Installer Manager (AIaC 2026)")
-        self.setMinimumSize(850, 650)
+        self.setMinimumSize(850, 680)
         self.init_ui()
         self.refresh_table()
 
@@ -801,6 +922,56 @@ class MainWindow(QMainWindow):
         title_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(title_label)
 
+        # --- WOW 1: CÀI ĐẶT TRỰC TIẾP TỪ URL ---
+        url_layout = QHBoxLayout()
+        url_layout.setSpacing(10)
+        
+        url_label = QLabel("Dán Link URL tải app:", self)
+        url_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        
+        self.url_input = QLineEdit(self)
+        self.url_input.setPlaceholderText("https://github.com/.../vuaoffice.AppImage (Direct link tải file)...")
+        self.url_input.setStyleSheet("padding: 8px; border: 1px solid #bdc3c7; border-radius: 6px; background-color: white;")
+        
+        self.btn_download = QPushButton("Tải & Cài đặt", self)
+        self.btn_download.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        self.btn_download.setStyleSheet("""
+            QPushButton {
+                background-color: #2ecc71;
+                color: white;
+                border-radius: 6px;
+                padding: 8px 18px;
+            }
+            QPushButton:hover {
+                background-color: #27ae60;
+            }
+        """)
+        self.btn_download.clicked.connect(self.start_download)
+        
+        url_layout.addWidget(url_label)
+        url_layout.addWidget(self.url_input)
+        url_layout.addWidget(self.btn_download)
+        main_layout.addLayout(url_layout)
+
+        # Progress Bar tải xuống
+        self.download_progress = QProgressBar(self)
+        self.download_progress.setRange(0, 100)
+        self.download_progress.setValue(0)
+        self.download_progress.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #bdc3c7;
+                border-radius: 6px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #3498db;
+                border-radius: 5px;
+            }
+        """)
+        self.download_progress.hide()  # Mặc định ẩn
+        main_layout.addWidget(self.download_progress)
+
         # Drop Zone
         self.drop_zone = DropZoneWidget(self)
         self.drop_zone.fileDropped.connect(self.check_and_start_install)
@@ -809,12 +980,12 @@ class MainWindow(QMainWindow):
         # Log View
         self.log_view = QTextEdit(self)
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText("Trạng thái tiến trình cài đặt...")
-        self.log_view.setMaximumHeight(110)
+        self.log_view.setPlaceholderText("Trạng thái tiến trình cài đặt và tải xuống...")
+        self.log_view.setMaximumHeight(100)
         self.log_view.setStyleSheet("background-color: #2c3e50; color: #ecf0f1; font-family: Courier; border-radius: 8px; padding: 6px;")
         main_layout.addWidget(self.log_view, stretch=1)
 
-        list_label = QLabel("Danh sách ứng dụng đã quản lý (Double-click dòng để mở app nhanh):", self)
+        list_label = QLabel("Danh sách ứng dụng đã quản lý (Double-click / Right-click dòng để có thêm tùy chọn):", self)
         list_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
         list_label.setStyleSheet("color: #2c3e50; margin-top: 5px;")
         main_layout.addWidget(list_label)
@@ -840,7 +1011,10 @@ class MainWindow(QMainWindow):
                 border: none;
             }
         """)
-        # Kết nối sự kiện click đúp dòng trong bảng để chạy app
+        
+        # Thiết lập sự kiện Context Menu và Double-click
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_context_menu)
         self.table.itemDoubleClicked.connect(self.on_table_double_clicked)
         
         main_layout.addWidget(self.table, stretch=3)
@@ -873,7 +1047,6 @@ class MainWindow(QMainWindow):
             action_layout.setContentsMargins(4, 2, 4, 2)
             action_layout.setSpacing(6)
             
-            # Nút Mở (Màu xanh dương)
             btn_launch = QPushButton("Mở")
             btn_launch.setStyleSheet("""
                 QPushButton {
@@ -889,7 +1062,6 @@ class MainWindow(QMainWindow):
             """)
             btn_launch.clicked.connect(lambda checked, aid=app_id: self.launch_app_by_id(aid))
             
-            # Nút Gỡ
             btn_uninstall = QPushButton("Gỡ bỏ")
             btn_uninstall.setStyleSheet("""
                 QPushButton {
@@ -910,12 +1082,75 @@ class MainWindow(QMainWindow):
             
             self.table.setCellWidget(row, 4, action_widget)
 
-    # --- KHỞI CHẠY APP ---
-    def launch_app_by_id(self, app_id):
-        success, message = launch_app_by_id(app_id)
+    # --- WOW 1: TẢI FILE TỪ URL ---
+    def start_download(self):
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "Thiếu liên kết", "Anh Tân vui lòng nhập hoặc dán liên kết URL tải app!")
+            return
+            
+        if not (url.startswith("http://") or url.startswith("https://")):
+            QMessageBox.warning(self, "Liên kết không hợp lệ", "Liên kết phải bắt đầu bằng http:// hoặc https://")
+            return
+
+        self.log_view.clear()
+        self.log(f"-> Khởi tạo tải xuống từ liên kết: {url}")
+        
+        # Khóa giao diện
+        self.btn_download.setEnabled(False)
+        self.url_input.setEnabled(False)
+        self.drop_zone.setEnabled(False)
+        self.download_progress.setValue(0)
+        self.download_progress.show()
+        self.statusBar().showMessage("Đang tải file từ URL...")
+
+        # Chạy thread
+        self.dl_worker = DownloadWorker(url)
+        self.dl_worker.progress_signal.connect(self.on_download_progress)
+        self.dl_worker.finished_signal.connect(self.on_download_finished)
+        self.dl_worker.start()
+
+    def on_download_progress(self, percent, progress_text):
+        if percent >= 0:
+            self.download_progress.setValue(percent)
+        self.log(progress_text)
+        self.statusBar().showMessage(progress_text)
+
+    def on_download_finished(self, success, message, filepath):
+        self.btn_download.setEnabled(True)
+        self.url_input.setEnabled(True)
+        self.drop_zone.setEnabled(True)
+        self.download_progress.hide()
+        
+        if success:
+            self.log(f"[XONG] Tải file hoàn tất: {filepath}")
+            # Gửi Toast thông báo Cinnamon (WOW 2)
+            send_system_notification("Tải xuống hoàn tất", f"Đã tải thành công file cài đặt từ liên kết về thư mục tạm.")
+            # Chuyển tiếp sang luồng cài đặt
+            self.check_and_start_install(filepath)
+        else:
+            self.log(f"[LỖI] Tải thất bại: {message}")
+            self.statusBar().showMessage("Tải file thất bại.")
+            QMessageBox.critical(self, "Lỗi tải file", message)
+
+    # --- KHỞI CHẠY APP & CONTEXT MENU (WOW 3) ---
+    def launch_app_by_id(self, app_id, debug_mode=False):
+        success, message = launch_app_by_id(app_id, debug_mode)
         if success:
             self.log(f"[CHẠY] {message}")
             self.statusBar().showMessage(message, 3000)
+            
+            # Gửi Toast thông báo Cinnamon
+            registry = load_registry()
+            info = registry.get(app_id, {})
+            icon = info.get("desktop_files", [""])[0] # Lấy icon tạm
+            # Tốt nhất là dùng icon trích xuất trong thư mục cài
+            final_icon = ""
+            if info.get("type") in ["appimage", "archive"]:
+                app_dir = Path(info.get("install_path", ""))
+                if (app_dir / "icon.png").exists():
+                    final_icon = str(app_dir / "icon.png")
+            send_system_notification("Khởi chạy ứng dụng", f"Đang chạy ứng dụng '{info.get('name', app_id)}'...", final_icon)
         else:
             self.log(f"[LỖI] {message}")
             QMessageBox.critical(self, "Lỗi khởi chạy", message)
@@ -927,6 +1162,41 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(app_ids):
             app_id = app_ids[row]
             self.launch_app_by_id(app_id)
+
+    def show_context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item:
+            return
+            
+        row = item.row()
+        registry = load_registry()
+        app_ids = list(registry.keys())
+        if not (0 <= row < len(app_ids)):
+            return
+            
+        app_id = app_ids[row]
+        app_name = registry[app_id].get("name", app_id)
+        
+        # Tạo Menu chuột phải
+        menu = QMenu(self)
+        menu.setFont(QFont("Segoe UI", 10))
+        
+        act_run = QAction("▶️  Khởi chạy ứng dụng", self)
+        act_run.triggered.connect(lambda: self.launch_app_by_id(app_id))
+        
+        # WOW 3 Action
+        act_debug = QAction("🐛  Chạy chế độ Debug Log (Xem Log)", self)
+        act_debug.triggered.connect(lambda: self.launch_app_by_id(app_id, debug_mode=True))
+        
+        act_uninstall = QAction("🗑️  Gỡ cài đặt ứng dụng", self)
+        act_uninstall.triggered.connect(lambda: self.confirm_uninstall(app_id))
+        
+        menu.addAction(act_run)
+        menu.addAction(act_debug)
+        menu.addSeparator()
+        menu.addAction(act_uninstall)
+        
+        menu.exec_(QCursor.pos())
 
     # --- KIỂM TRA TRÙNG LẶP & SMART UPDATE ---
     def check_and_start_install(self, filepath):
@@ -986,17 +1256,23 @@ class MainWindow(QMainWindow):
         self.worker.finished_signal.connect(self.on_install_finished)
         self.worker.start()
 
-    def on_install_finished(self, success, message):
+    def on_install_finished(self, success, message, icon_path):
         self.drop_zone.setEnabled(True)
         self.refresh_table()
         
         if success:
             self.log(f"[XONG] {message}")
             self.statusBar().showMessage("Cài đặt thành công!")
+            
+            # Gửi Toast thông báo Cinnamon (WOW 2)
+            send_system_notification("Cài đặt thành công", message, icon_path)
             QMessageBox.information(self, "Thành công", message)
         else:
             self.log(f"[THẤT BẠI] {message}")
             self.statusBar().showMessage("Cài đặt thất bại.")
+            
+            # Gửi Toast thông báo lỗi Cinnamon (WOW 2)
+            send_system_notification("Cài đặt thất bại", message)
             QMessageBox.critical(self, "Lỗi cài đặt", message)
 
     # --- CONFIRM UNINSTALL & PURGE CONFIG ---
@@ -1039,10 +1315,14 @@ class MainWindow(QMainWindow):
         if success:
             self.log(f"[XONG] {message}")
             self.statusBar().showMessage("Gỡ cài đặt thành công!")
+            
+            # Gửi Toast thông báo Cinnamon (WOW 2)
+            send_system_notification("Gỡ cài đặt thành công", message)
             QMessageBox.information(self, "Thành công", message)
         else:
             self.log(f"[THẤT BẠI] {message}")
             self.statusBar().showMessage("Gỡ cài đặt thất bại.")
+            send_system_notification("Gỡ cài đặt thất bại", message)
             QMessageBox.critical(self, "Lỗi gỡ cài đặt", message)
 
 
