@@ -861,6 +861,8 @@ def get_skill_category(name):
         return "📱 Mobile & App"
     elif any(kw in name_lower for kw in ["odoo", "postgres", "database", "sql"]):
         return "🐍 Odoo & Backend"
+    elif any(kw in name_lower for kw in ["test", "harness", "validation", "eval", "verification"]):
+        return "🧪 Tester & Auto Test"
     elif any(kw in name_lower for kw in ["ponytail", "audit", "checklist", "accidental-data-loss"]):
         return "🔍 Audit & Chất lượng"
     elif any(kw in name_lower for kw in ["token", "caveman", "superpowers"]):
@@ -938,7 +940,6 @@ def get_aiac_git_info():
         return "Không thể đọc Git log"
 
 def get_skill_markdown_content(src_path):
-    """Tìm đọc file mô tả SKILL.md hoặc README.md của skill"""
     potential_files = [
         src_path / "SKILL.md",
         src_path / "prompts" / "SKILL.md",
@@ -954,39 +955,20 @@ def get_skill_markdown_content(src_path):
     return ""
 
 def markdown_to_html(md_text):
-    """Parser Markdown đơn giản sang HTML để hiển thị Rich Text"""
     if not md_text.strip():
         return "<p style='color: #7f8c8d;'>Không có file hướng dẫn hoặc mô tả SKILL.md/README.md cho skill này.</p>"
         
-    # Loại bỏ Frontmatter YAML
     md_text = re.sub(r'^---.*?---', '', md_text, flags=re.DOTALL)
-    
-    # Escape HTML cơ bản để tránh lỗi render
     html = md_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    
-    # Thay thế code block ``` ... ```
     html = re.sub(r'```(.*?)\n(.*?)```', r'<pre style="background-color: #f5f6fa; color: #2f3640; padding: 8px; border-left: 4px solid #3498db; font-family: monospace; font-size: 10pt;">\2</pre>', html, flags=re.DOTALL)
-    
-    # Thay thế inline code `...`
     html = re.sub(r'`(.*?)`', r'<code style="background-color: #f1f2f6; color: #c23616; padding: 2px 4px; border-radius: 3px; font-family: monospace; font-weight: bold;">\1</code>', html)
-    
-    # Thay thế Heading
     html = re.sub(r'^### (.*?)$', r'<h4 style="color: #2c3e50; margin-top: 10px; margin-bottom: 5px; font-weight: bold;">\1</h4>', html, flags=re.MULTILINE)
     html = re.sub(r'^## (.*?)$', r'<h3 style="color: #2980b9; margin-top: 12px; margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 3px;">\1</h3>', html, flags=re.MULTILINE)
     html = re.sub(r'^# (.*?)$', r'<h2 style="color: #2c3e50; margin-top: 14px; margin-bottom: 8px; border-bottom: 2px solid #3498db; padding-bottom: 5px;">\1</h2>', html, flags=re.MULTILINE)
-    
-    # Thay thế list item `- ` hoặc `* `
     html = re.sub(r'^[-\*] (.*?)$', r'<li>\1</li>', html, flags=re.MULTILINE)
-    
-    # Thay thế bold **...**
     html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', html)
-    
-    # Chuyển đổi ngắt dòng sang <br>
     html = html.replace('\n', '<br>')
-    
-    # Bọc các <li> liền kề thành <ul> (thô sơ nhưng đủ dùng)
     html = html.replace("</li><br><li>", "</li><li>")
-    
     return html
 
 
@@ -1181,7 +1163,7 @@ class MainWindow(QMainWindow):
         tab_aiac_layout.setContentsMargins(15, 15, 15, 15)
         tab_aiac_layout.setSpacing(12)
 
-        # Hướng dẫn & Giải thích ý nghĩa các nút / cơ chế (Wow 5)
+        # Hướng dẫn & Giải thích ý nghĩa các nút / cơ chế
         help_frame = QFrame(self)
         help_frame.setStyleSheet("background-color: #eef2f7; border-left: 5px solid #3498db; padding: 8px; border-radius: 4px;")
         help_layout = QVBoxLayout(help_frame)
@@ -1244,7 +1226,7 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_update_resource)
         tab_aiac_layout.addLayout(btn_layout)
 
-        # Bộ lọc Nhóm kỹ năng (Wow 6)
+        # Bộ lọc Nhóm kỹ năng (Tester & Auto Test đã được tích hợp)
         filter_layout = QHBoxLayout()
         lbl_filter = QLabel("<b>Phân loại nhóm kỹ năng:</b>", self)
         lbl_filter.setFont(QFont("Segoe UI", 10))
@@ -1253,6 +1235,7 @@ class MainWindow(QMainWindow):
             "Tất cả các kỹ năng",
             "📱 Mobile & App (Flutter, iOS, Hermes)",
             "🐍 Odoo & Backend (Python, Database)",
+            "🧪 Tester & Auto Test (Unit Test, Automation)",
             "⚙️ Quy trình & Git (GitSync, Dev-Workflow)",
             "🔍 Audit & Chất lượng code (Ponytail, Checklist)",
             "⚡ Tiết kiệm Token (Token-Killer, Caveman)"
@@ -1264,7 +1247,7 @@ class MainWindow(QMainWindow):
         filter_layout.addStretch()
         tab_aiac_layout.addLayout(filter_layout)
 
-        # Splitter ngang chia đôi Trái (Bảng) - Phải (Mô tả chi tiết) (Wow 7)
+        # Splitter ngang chia đôi Trái (Bảng) - Phải (Mô tả chi tiết)
         main_splitter = QSplitter(Qt.Horizontal)
         
         # Cột bên trái: Bảng
@@ -1315,10 +1298,6 @@ class MainWindow(QMainWindow):
         self.aiac_log_view.append(text)
         self.aiac_log_view.moveCursor(self.aiac_log_view.textCursor().End)
 
-    def log(self, text):
-        self.log_view.append(text)
-        self.log_view.moveCursor(self.log_view.textCursor().End)
-
     # --- REFRESH APP INSTALLER TABLE ---
     def refresh_table(self):
         self.table.setRowCount(0)
@@ -1363,16 +1342,15 @@ class MainWindow(QMainWindow):
         filter_index = self.filter_combo.currentIndex()
         filter_text = self.filter_combo.currentText()
         
-        # Xác định nhóm cần lọc
         target_category = ""
         if filter_index > 0:
             if "Mobile" in filter_text: target_category = "📱 Mobile & App"
             elif "Odoo" in filter_text: target_category = "🐍 Odoo & Backend"
+            elif "Tester" in filter_text: target_category = "🧪 Tester & Auto Test"
             elif "Audit" in filter_text: target_category = "🔍 Audit & Chất lượng"
             elif "Token" in filter_text: target_category = "⚡ Tiết kiệm Token"
             elif "Quy trình" in filter_text: target_category = "⚙️ Quy trình & Git"
 
-        # Lọc danh sách
         self.filtered_skill_names = []
         for name, info in self.all_skills.items():
             if target_category and info["category"] != target_category:
@@ -1383,18 +1361,14 @@ class MainWindow(QMainWindow):
         for row, name in enumerate(self.filtered_skill_names):
             info = self.all_skills[name]
             
-            # Tên skill
-            name_item = QTableWidgetItem(name)
-            self.skills_table.setItem(row, 0, name_item)
+            self.skills_table.setItem(row, 0, QTableWidgetItem(name))
             
-            # Trạng thái
             status_item = QTableWidgetItem(info["status"])
             status_item.setForeground(Qt.white)
             status_item.setBackground(QApplication.palette().color(QApplication.palette().Window))
             status_item.setTextAlignment(Qt.AlignCenter)
             self.skills_table.setItem(row, 1, status_item)
             
-            # Button kích hoạt/tắt symlink
             btn_action = QPushButton()
             if info["status"] == "Đã kích hoạt":
                 btn_action.setText("Tắt")
@@ -1413,18 +1387,16 @@ class MainWindow(QMainWindow):
                 
             self.skills_table.setCellWidget(row, 2, btn_action)
 
-    # --- SỰ KIỆN CLICK CHỌN SKILL ĐỂ HIỂN THỊ MÔ TẢ (Wow 7) ---
+    # --- SỰ KIỆN CLICK CHỌN SKILL ĐỂ HIỂN THỊ MÔ TẢ ---
     def on_skill_selected(self, row, col):
         if not (0 <= row < len(self.filtered_skill_names)):
             return
         name = self.filtered_skill_names[row]
         info = self.all_skills[name]
         
-        # Đọc file SKILL.md hoặc README.md
         md_content = get_skill_markdown_content(info["src_path"])
         html_content = markdown_to_html(md_content)
         
-        # Header thông tin chung
         header_html = f"""
         <div style="background-color: #f8f9fa; border: 1px solid #ddd; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
             <h2 style="color: #2c3e50; margin: 0 0 6px 0;">{name}</h2>
@@ -1457,7 +1429,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Lỗi kích hoạt", f"Không thể tạo symlink cho skill {name}: {str(e)}")
             
         self.refresh_skills_table()
-        # Click lại dòng vừa chọn để cập nhật trạng thái bên panel chi tiết
         try:
             row = self.filtered_skill_names.index(name)
             self.on_skill_selected(row, 0)
@@ -1473,7 +1444,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Đã tắt skill {name} thành công!", 3000)
                 send_system_notification("Gỡ bỏ Skill thành công", f"Skill '{name}' đã được ngắt kết nối.")
             else:
-                QMessageBox.warning(self, "Không thể gỡ", f"Đường dẫn '{dst_path}' không phải symlink an toàn. Vui lòng kiểm tra thủ công.")
+                QMessageBox.warning(self, "Không thể gỡ", f"Đường dẫn '{dst_path}' không phải symlink an sau an toàn. Vui lòng kiểm tra thủ công.")
         except Exception as e:
             self.aiac_log(f"[LỖI] Không thể tắt skill {name}: {str(e)}")
             QMessageBox.critical(self, "Lỗi", f"Không thể xóa symlink: {str(e)}")
