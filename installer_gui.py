@@ -69,6 +69,7 @@ def save_registry(registry):
 
 # --- UTILS ĐO DUNG LƯỢNG (STORAGE TRACKER) ---
 def get_dir_size(path):
+    """Tính tổng dung lượng thư mục hoặc file (bytes)"""
     total_size = 0
     try:
         path = Path(path)
@@ -84,6 +85,7 @@ def get_dir_size(path):
     return total_size
 
 def get_deb_installed_size(pkg_name):
+    """Truy vấn dung lượng đã cài đặt của gói deb qua dpkg (bytes)"""
     try:
         result = subprocess.run(
             ["dpkg-query", "-W", "-f=${Installed-Size}\\n", pkg_name],
@@ -95,6 +97,7 @@ def get_deb_installed_size(pkg_name):
         return 0
 
 def format_size(size_bytes):
+    """Format dung lượng sang dạng trực quan (KB, MB, GB)"""
     if size_bytes <= 0:
         return "N/A"
     if size_bytes < 1024:
@@ -106,6 +109,7 @@ def format_size(size_bytes):
     return f"{s} {size_name[i]}"
 
 def get_app_display_size(app_id, info):
+    """Lấy dung lượng hiển thị của app dựa theo loại"""
     app_type = info.get("type", "")
     if app_type == "deb":
         size = get_deb_installed_size(info.get("deb_package_name", app_id))
@@ -722,7 +726,6 @@ class ScriptWorker(QThread):
 
 # --- SCAN AIaC SKILLS (SYM LINKS MANAGER) ---
 def scan_aiac_skills():
-    """Quét các skill nguồn AIaC và đối chiếu symlink trong Antigravity"""
     skills = {}
     
     # 1. Quét trong thư mục plugins
@@ -753,32 +756,29 @@ def scan_aiac_skills():
         dst_path = GEMINI_SKILLS_DIR / name
         if not dst_path.exists() and not dst_path.is_symlink():
             info["status"] = "Chưa cài đặt"
-            info["color"] = "#7f8c8d" # Màu xám
+            info["color"] = "#7f8c8d"
         elif dst_path.is_symlink():
             try:
                 target = dst_path.readlink()
-                # Resolve để so khớp tuyệt đối
                 src_resolved = info["src_path"].resolve()
-                # Link target có thể tương đối hoặc tuyệt đối
                 target_resolved = Path(os.path.normpath(os.path.join(GEMINI_SKILLS_DIR, target))).resolve()
                 
                 if src_resolved == target_resolved:
                     info["status"] = "Đã kích hoạt"
-                    info["color"] = "#27ae60" # Màu xanh lá
+                    info["color"] = "#27ae60"
                 else:
                     info["status"] = "Xung đột (Trỏ nơi khác)"
-                    info["color"] = "#d35400" # Màu cam
+                    info["color"] = "#d35400"
             except Exception:
                 info["status"] = "Symlink lỗi"
                 info["color"] = "#c0392b"
         else:
             info["status"] = "Lỗi (Thư mục vật lý)"
-            info["color"] = "#c0392b" # Màu đỏ
+            info["color"] = "#c0392b"
             
     return skills
 
 def get_aiac_git_info():
-    """Lấy thông tin commit git hiện tại của AIaC"""
     if not (AIAC_DIR / ".git").exists():
         return "Không phát hiện Git repo tại /media/tanma/DATA/aiac"
     try:
@@ -789,6 +789,92 @@ def get_aiac_git_info():
         return res.stdout.strip()
     except Exception:
         return "Không thể đọc Git log"
+
+
+# --- TÙY CHỈNH WIDGET KÉO THẢ (DRAG & DROP ZONE) ---
+class DropZoneWidget(QFrame):
+    fileDropped = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
+        self.setLineWidth(2)
+        
+        self.normal_style = """
+            QFrame {
+                border: 2px dashed #3498db;
+                border-radius: 12px;
+                background-color: #ecf0f1;
+            }
+            QFrame:hover {
+                background-color: #e2e8f0;
+            }
+        """
+        self.drag_style = """
+            QFrame {
+                border: 2px dashed #2ecc71;
+                border-radius: 12px;
+                background-color: #d5f5e3;
+            }
+        """
+        self.setStyleSheet(self.normal_style)
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+
+        self.label_icon = QLabel("📥", self)
+        self.label_icon.setFont(QFont("Segoe UI", 36))
+        self.label_icon.setAlignment(Qt.AlignCenter)
+        
+        self.label_text = QLabel("KÉO THẢ FILE CÀI ĐẶT VÀO ĐÂY\n(.deb, .AppImage, .zip, .tar.gz, .flatpak, .snap, .sh, .run)", self)
+        self.label_text.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        self.label_text.setStyleSheet("color: #2c3e50;")
+        self.label_text.setAlignment(Qt.AlignCenter)
+
+        self.btn_browse = QPushButton("Hoặc bấm vào đây để chọn file", self)
+        self.btn_browse.setFont(QFont("Segoe UI", 10))
+        self.btn_browse.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        self.btn_browse.clicked.connect(self.select_file_dialog)
+
+        layout.addWidget(self.label_icon)
+        layout.addWidget(self.label_text)
+        layout.addWidget(self.btn_browse)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.setStyleSheet(self.drag_style)
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet(self.normal_style)
+
+    def dropEvent(self, event: QDropEvent):
+        self.setStyleSheet(self.normal_style)
+        for url in event.mimeData().urls():
+            filepath = url.toLocalFile()
+            if filepath:
+                self.fileDropped.emit(filepath)
+                break
+
+    def select_file_dialog(self):
+        file_filter = "File cài đặt Linux (*.deb *.AppImage *.zip *.tar.gz *.tar.xz *.tgz *.flatpak *.flatpakref *.snap *.sh *.run);;Tất cả file (*)"
+        filepath, _ = QFileDialog.getOpenFileName(self, "Chọn file cài đặt", "/home/tanma/Downloads", file_filter)
+        if filepath:
+            self.fileDropped.emit(filepath)
 
 
 # --- CỬA SỔ CHÍNH ---
@@ -852,7 +938,7 @@ class MainWindow(QMainWindow):
         self.download_progress.hide()
         tab_installer_layout.addWidget(self.download_progress)
 
-        # Drop Zone
+        # Drop Zone (DropZoneWidget đã được định nghĩa ở phía trước)
         self.drop_zone = DropZoneWidget(self)
         self.drop_zone.fileDropped.connect(self.check_and_start_install)
         tab_installer_layout.addWidget(self.drop_zone, stretch=2)
@@ -957,13 +1043,10 @@ class MainWindow(QMainWindow):
         self.aiac_log_view.setStyleSheet("background-color: #2c3e50; color: #ecf0f1; font-family: Courier; border-radius: 8px; padding: 6px;")
         splitter.addWidget(self.aiac_log_view)
         
-        # Set tỉ lệ mặc định cho splitter
         splitter.setSizes([400, 150])
         tab_aiac_layout.addWidget(splitter)
 
         tab_widget.addTab(tab_aiac, "🤖  AIaC Skill Manager")
-
-        self.statusBar().showMessage("Sẵn sàng.")
 
     def update_git_label(self):
         git_info = get_aiac_git_info()
@@ -1016,23 +1099,18 @@ class MainWindow(QMainWindow):
         
         self.skills_table.setRowCount(len(skills))
         for row, (name, info) in enumerate(skills.items()):
-            # Tên skill
             self.skills_table.setItem(row, 0, QTableWidgetItem(name))
             
-            # Đường dẫn nguồn
             src_path_item = QTableWidgetItem(str(info["src_path"].relative_to(AIAC_DIR)))
             src_path_item.setToolTip(str(info["src_path"]))
             self.skills_table.setItem(row, 1, src_path_item)
             
-            # Trạng thái
             status_item = QTableWidgetItem(info["status"])
             status_item.setForeground(Qt.white)
             status_item.setBackground(QApplication.palette().color(QApplication.palette().Window))
-            # Set background color
             status_item.setTextAlignment(Qt.AlignCenter)
             self.skills_table.setItem(row, 2, status_item)
             
-            # Button kích hoạt/tắt symlink
             btn_action = QPushButton()
             if info["status"] == "Đã kích hoạt":
                 btn_action.setText("Tắt")
@@ -1055,7 +1133,6 @@ class MainWindow(QMainWindow):
     def activate_skill(self, name, src_path):
         dst_path = GEMINI_SKILLS_DIR / name
         try:
-            # Dọn dẹp đích nếu đã tồn tại để tránh xung đột
             if dst_path.exists() or dst_path.is_symlink():
                 if dst_path.is_symlink():
                     dst_path.unlink()
@@ -1064,12 +1141,9 @@ class MainWindow(QMainWindow):
                 else:
                     dst_path.unlink()
             
-            # Tạo symlink
             os.symlink(src_path, dst_path)
             self.aiac_log(f"[OK] Đã tạo liên kết symlink cho skill: {name}")
             self.statusBar().showMessage(f"Đã kích hoạt skill {name} thành công!", 3000)
-            
-            # Thông báo Cinnamon
             send_system_notification("Kích hoạt Skill thành công", f"Skill '{name}' đã được liên kết vào Antigravity.")
         except Exception as e:
             self.aiac_log(f"[LỖI] Không thể kích hoạt skill {name}: {str(e)}")
