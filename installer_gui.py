@@ -10,6 +10,7 @@ import tempfile
 import tarfile
 import zipfile
 import re
+import math
 from pathlib import Path
 
 # Cấu hình đường dẫn
@@ -30,10 +31,9 @@ try:
                                  QHBoxLayout, QLabel, QPushButton, QTableWidget, 
                                  QTableWidgetItem, QHeaderView, QTextEdit, QFileDialog, 
                                  QMessageBox, QFrame)
-    from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMimeData
-    from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QIcon
+    from PyQt5.QtCore import Qt, QThread, pyqtSignal
+    from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont
 except ImportError:
-    # Nếu thiếu PyQt5, hiển thị hộp thoại thông báo đồ họa qua zenity
     error_msg = ("Ứng dụng Linux App Installer yêu cầu thư viện PyQt5.\\n\\n"
                  "Anh Tân vui lòng mở terminal và chạy lệnh sau để cài đặt:\\n"
                  "sudo apt install -y python3-pyqt5")
@@ -56,6 +56,76 @@ def save_registry(registry):
             json.dump(registry, f, indent=4, ensure_ascii=False)
     except Exception:
         pass
+
+# --- UTILS ĐO DUNG LƯỢNG (STORAGE TRACKER) ---
+def get_dir_size(path):
+    """Tính tổng dung lượng thư mục hoặc file (bytes)"""
+    total_size = 0
+    try:
+        path = Path(path)
+        if path.is_file():
+            return path.stat().st_size
+        for dirpath, dirnames, filenames in os.walk(path):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                if not os.path.islink(fp):
+                    total_size += os.path.getsize(fp)
+    except Exception:
+        pass
+    return total_size
+
+def get_deb_installed_size(pkg_name):
+    """Truy vấn dung lượng đã cài đặt của gói deb qua dpkg (bytes)"""
+    try:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Installed-Size}\\n", pkg_name],
+            capture_output=True, text=True, check=True
+        )
+        size_kb = int(result.stdout.strip())
+        return size_kb * 1024
+    except Exception:
+        return 0
+
+def format_size(size_bytes):
+    """Format dung lượng sang dạng trực quan (KB, MB, GB)"""
+    if size_bytes <= 0:
+        return "N/A"
+    size_name = ("B", "KB", "MB", "GB", "TB")
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_name[i]}"
+
+def get_app_display_size(app_id, info):
+    """Lấy dung lượng hiển thị của app dựa theo loại"""
+    app_type = info.get("type", "")
+    if app_type == "deb":
+        size = get_deb_installed_size(info.get("deb_package_name", app_id))
+        return format_size(size) if size > 0 else "Hệ thống"
+    elif app_type in ["appimage", "archive"]:
+        size = get_dir_size(info.get("install_path", ""))
+        return format_size(size)
+    elif app_type == "flatpak":
+        # Đo thư mục flatpak user hoặc system
+        app_id_real = info.get("flatpak_app_id", app_id)
+        user_path = Path(f"/home/tanma/.local/share/flatpak/app/{app_id_real}")
+        sys_path = Path(f"/var/lib/flatpak/app/{app_id_real}")
+        size = 0
+        if user_path.exists():
+            size = get_dir_size(user_path)
+        elif sys_path.exists():
+            size = get_dir_size(sys_path)
+        return format_size(size) if size > 0 else "Hệ thống Flatpak"
+    elif app_type == "snap":
+        app_name_real = info.get("snap_name", app_id)
+        # Snap mount loop-device nên đo file snap thực tế trong thư mục snapd
+        snap_file_dir = Path("/var/lib/snapd/snaps")
+        size = 0
+        if snap_file_dir.exists():
+            for f in snap_file_dir.glob(f"{app_name_real}_*.snap"):
+                size += f.stat().st_size
+        return format_size(size) if size > 0 else "Hệ thống Snap"
+    return "Không rõ"
 
 # --- UTILS SHORTCUT (.DESKTOP) ---
 def make_desktop_file_trusted(desktop_path):
@@ -93,20 +163,22 @@ Comment=Cài đặt thông qua Linux App Installer Manager
 
 def get_clean_name(filepath):
     name = Path(filepath).stem
+    # Tẩy phiên bản và hậu tố hệ thống
     name = re.sub(r'[-_]v?\d+\.\d+.*$', '', name, flags=re.IGNORECASE)
     name = re.sub(r'[-_]amd64$', '', name, flags=re.IGNORECASE)
     name = re.sub(r'[-_]x86_64$', '', name, flags=re.IGNORECASE)
     name = re.sub(r'[-_]linux$', '', name, flags=re.IGNORECASE)
     return name
 
-# --- THREAD XỬ LÝ CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
+# --- THREAD CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
 class InstallWorker(QThread):
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, filepath):
+    def __init__(self, filepath, is_upgrade=False):
         super().__init__()
         self.filepath = Path(filepath).resolve()
+        self.is_upgrade = is_upgrade
 
     def run(self):
         filename = self.filepath.name.lower()
@@ -115,10 +187,14 @@ class InstallWorker(QThread):
                 self.install_deb()
             elif filename.endswith(".appimage"):
                 self.install_appimage()
-            elif filename.endswith(".tar.gz") or filename.endswith(".tar.xz") or filename.endswith(".tgz") or filename.endswith(".zip"):
+            elif filename.endswith((".tar.gz", ".tar.xz", ".tgz", ".zip")):
                 self.install_archive()
-            elif filename.endswith(".sh") or filename.endswith(".run"):
+            elif filename.endswith((".sh", ".run")):
                 self.install_script()
+            elif filename.endswith((".flatpak", ".flatpakref")):
+                self.install_flatpak()
+            elif filename.endswith(".snap"):
+                self.install_snap()
             else:
                 self.finished_signal.emit(False, "Định dạng file không được hỗ trợ!")
         except Exception as e:
@@ -126,9 +202,8 @@ class InstallWorker(QThread):
 
     def install_deb(self):
         self.progress_signal.emit(f"Đang cài đặt gói Debian (.deb): {self.filepath.name}")
-        self.progress_signal.emit("Hệ thống sẽ yêu cầu quyền quản trị (mật khẩu đồ họa)...")
+        self.progress_signal.emit("Yêu cầu mật khẩu quản trị (PolicyKit)...")
         
-        # 1. Phân tích gói deb lấy tên
         pkg_name = ""
         version = ""
         try:
@@ -147,19 +222,19 @@ class InstallWorker(QThread):
             self.finished_signal.emit(False, "Không thể lấy tên gói từ file .deb")
             return
 
-        # 2. Cài đặt bằng pkexec apt
+        # Thực thi cài đặt bằng pkexec
         cmd = ["pkexec", "apt-get", "install", "-y", str(self.filepath)]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
-                self.finished_signal.emit(False, f"Cài đặt thất bại hoặc bị hủy bởi người dùng.\\nLog: {proc.stderr}")
+                self.finished_signal.emit(False, f"Cài đặt thất bại hoặc bị hủy.\\nLog: {proc.stderr}")
                 return
-            self.progress_signal.emit(f"Đã cài đặt thành công gói {pkg_name} ({version})")
+            self.progress_signal.emit(f"Đã cài đặt gói {pkg_name} ({version})")
         except Exception as e:
             self.finished_signal.emit(False, f"Lỗi khi chạy lệnh pkexec: {str(e)}")
             return
 
-        # 3. Tìm shortcut desktop hệ thống
+        # Tìm shortcut hệ thống vừa sinh ra
         desktop_files = []
         try:
             list_result = subprocess.run(["dpkg", "-L", pkg_name], capture_output=True, text=True, check=True)
@@ -186,7 +261,7 @@ class InstallWorker(QThread):
                 except Exception as e:
                     self.progress_signal.emit(f"Lỗi copy shortcut: {str(e)}")
 
-        # 4. Lưu registry
+        # Lưu registry
         registry = load_registry()
         registry[pkg_name] = {
             "name": pkg_name,
@@ -209,13 +284,16 @@ class InstallWorker(QThread):
         app_dir.mkdir(parents=True, exist_ok=True)
         dest_appimage = app_dir / f"{app_id}.AppImage"
         
-        # Copy file
-        self.progress_signal.emit("Đang copy file AppImage vào thư mục lưu trữ...")
+        if self.is_upgrade and dest_appimage.exists():
+            self.progress_signal.emit("Đang dọn dẹp phiên bản cũ...")
+            dest_appimage.unlink()
+
+        self.progress_signal.emit("Đang sao chép file vào thư mục lưu trữ...")
         shutil.copy2(self.filepath, dest_appimage)
         dest_appimage.chmod(0o755)
         
         # Trích xuất icon
-        self.progress_signal.emit("Đang trích xuất icon gốc từ AppImage...")
+        self.progress_signal.emit("Đang trích xuất icon từ AppImage...")
         icon_dest_path = app_dir / "icon.png"
         final_icon = "application-x-executable"
         
@@ -252,16 +330,21 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Đã cài đặt ứng dụng {app_name} thành công!")
+        self.finished_signal.emit(True, f"Đã cài đặt/cập nhật ứng dụng {app_name} thành công!")
 
     def install_archive(self):
         self.progress_signal.emit(f"Đang cài đặt gói nén: {self.filepath.name}")
         app_name = get_clean_name(self.filepath)
         app_id = app_name.lower().replace(" ", "_")
         app_dir = APPS_DIR / app_id
+        
+        if self.is_upgrade and app_dir.exists():
+            self.progress_signal.emit("Đang xóa dữ liệu phiên bản cũ...")
+            shutil.rmtree(app_dir)
+            
         app_dir.mkdir(parents=True, exist_ok=True)
 
-        self.progress_signal.emit("Đang giải nén gói lưu trữ...")
+        self.progress_signal.emit("Đang giải nén...")
         try:
             if self.filepath.suffix == ".zip":
                 with zipfile.ZipFile(self.filepath, 'r') as zip_ref:
@@ -274,7 +357,7 @@ class InstallWorker(QThread):
             self.finished_signal.emit(False, f"Giải nén thất bại: {str(e)}")
             return
 
-        self.progress_signal.emit("Đang phân tích và tìm kiếm file thực thi chạy chính...")
+        self.progress_signal.emit("Đang tìm kiếm file chạy chính...")
         executables = []
         icons = []
         excluded_extensions = {
@@ -295,10 +378,9 @@ class InstallWorker(QThread):
                     icons.append(file_path)
 
         if not executables:
-            self.finished_signal.emit(False, f"Không tìm thấy file chạy chính nào trong {app_dir.name}.")
+            self.finished_signal.emit(False, f"Không tìm thấy file chạy chính nào.")
             return
 
-        # Tự động chọn file chạy chính phù hợp nhất
         exec_path = None
         matches = [e for e in executables if app_id in e.name.lower() or app_name.lower() in e.name.lower()]
         if matches:
@@ -327,19 +409,19 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Đã cài đặt gói nén {app_name} thành công!")
+        self.finished_signal.emit(True, f"Đã cài đặt/cập nhật gói nén {app_name} thành công!")
 
     def install_script(self):
-        self.progress_signal.emit(f"Đang chạy script cài đặt: {self.filepath.name}")
+        self.progress_signal.emit(f"Đang chạy script: {self.filepath.name}")
         self.filepath.chmod(0o755)
         
         try:
             proc = subprocess.run([str(self.filepath)], capture_output=True, text=True)
             if proc.returncode != 0:
-                self.finished_signal.emit(False, f"Script chạy lỗi. Chi tiết: {proc.stderr}")
+                self.finished_signal.emit(False, f"Script lỗi: {proc.stderr}")
                 return
         except Exception as e:
-            self.finished_signal.emit(False, f"Không thể thực thi script: {str(e)}")
+            self.finished_signal.emit(False, f"Lỗi chạy script: {str(e)}")
             return
 
         app_id = self.filepath.stem.lower().replace(" ", "_")
@@ -353,17 +435,146 @@ class InstallWorker(QThread):
             "installed_at": str(self.filepath.name)
         }
         save_registry(registry)
-        self.finished_signal.emit(True, f"Script cài đặt đã hoàn tất thành công!")
+        self.finished_signal.emit(True, f"Script cài đặt đã hoàn thành thành công!")
+
+    def install_flatpak(self):
+        self.progress_signal.emit(f"Đang cài đặt gói Flatpak: {self.filepath.name}")
+        
+        # Cài đặt mức user để không cần sudo
+        cmd = ["flatpak", "install", "--user", "-y", str(self.filepath)]
+        self.progress_signal.emit("Đang chạy lệnh cài đặt Flatpak ở mức user...")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                self.finished_signal.emit(False, f"Cài đặt Flatpak lỗi: {proc.stderr}")
+                return
+        except Exception as e:
+            self.finished_signal.emit(False, f"Lỗi thực thi lệnh flatpak: {str(e)}")
+            return
+
+        # Nhận diện Flatpak App ID
+        app_id_real = ""
+        if self.filepath.name.endswith(".flatpakref"):
+            # Đọc file flatpakref để tìm Name (App ID)
+            try:
+                with open(self.filepath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("Name="):
+                            app_id_real = line.split("=", 1)[1].strip()
+                            break
+            except Exception:
+                pass
+
+        if not app_id_real:
+            # Quét danh sách flatpak list để tìm app mới cài
+            try:
+                list_proc = subprocess.run(["flatpak", "list", "--columns=application"], capture_output=True, text=True)
+                apps = [line.strip() for line in list_proc.stdout.splitlines() if line.strip()]
+                # Chọn app phù hợp nhất với tên file
+                clean_name = get_clean_name(self.filepath).lower()
+                for app in apps:
+                    if clean_name in app.lower():
+                        app_id_real = app
+                        break
+            except Exception:
+                pass
+
+        if not app_id_real:
+            app_id_real = get_clean_name(self.filepath).lower()
+
+        # Tìm shortcut flatpak xuất ra ở user applications
+        flatpak_desktop_dir = Path("/home/tanma/.local/share/flatpak/exports/share/applications")
+        desktop_files = []
+        if flatpak_desktop_dir.exists():
+            for f in flatpak_desktop_dir.glob("*.desktop"):
+                if app_id_real in f.name.lower() or get_clean_name(self.filepath).lower() in f.name.lower():
+                    desktop_files.append(f)
+
+        created_shortcuts = []
+        if desktop_files:
+            for sys_desktop in desktop_files:
+                dest = DESKTOP_DIR / sys_desktop.name
+                try:
+                    shutil.copy2(sys_desktop, dest)
+                    make_desktop_file_trusted(dest)
+                    created_shortcuts.append(str(dest))
+                    self.progress_signal.emit(f"Đã tạo shortcut Desktop: {sys_desktop.name}")
+                except Exception:
+                    pass
+
+        registry = load_registry()
+        registry[app_id_real] = {
+            "name": get_clean_name(self.filepath),
+            "type": "flatpak",
+            "install_path": f"/home/tanma/.local/share/flatpak/app/{app_id_real}",
+            "executable_path": f"flatpak run {app_id_real}",
+            "desktop_files": created_shortcuts,
+            "flatpak_app_id": app_id_real,
+            "installed_at": str(self.filepath.name)
+        }
+        save_registry(registry)
+        self.finished_signal.emit(True, f"Cài đặt Flatpak {get_clean_name(self.filepath)} thành công!")
+
+    def install_snap(self):
+        self.progress_signal.emit(f"Đang cài đặt gói Snap: {self.filepath.name}")
+        self.progress_signal.emit("Yêu cầu mật khẩu quản trị (PolicyKit)...")
+        
+        # Cài snap offline cần cờ --dangerous
+        cmd = ["pkexec", "snap", "install", "--dangerous", str(self.filepath)]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                self.finished_signal.emit(False, f"Cài đặt Snap lỗi hoặc bị hủy.\\nLog: {proc.stderr}")
+                return
+        except Exception as e:
+            self.finished_signal.emit(False, f"Lỗi khi chạy lệnh pkexec snap: {str(e)}")
+            return
+
+        snap_name = get_clean_name(self.filepath).lower()
+        
+        # Tìm shortcut snap
+        snap_desktop_dir = Path("/var/lib/snapd/desktop/applications")
+        desktop_files = []
+        if snap_desktop_dir.exists():
+            for f in snap_desktop_dir.glob("*.desktop"):
+                if snap_name in f.name.lower():
+                    desktop_files.append(f)
+
+        created_shortcuts = []
+        if desktop_files:
+            for sys_desktop in desktop_files:
+                dest = DESKTOP_DIR / sys_desktop.name
+                try:
+                    shutil.copy2(sys_desktop, dest)
+                    make_desktop_file_trusted(dest)
+                    created_shortcuts.append(str(dest))
+                    self.progress_signal.emit(f"Đã tạo shortcut Desktop: {sys_desktop.name}")
+                except Exception:
+                    pass
+
+        registry = load_registry()
+        registry[snap_name] = {
+            "name": get_clean_name(self.filepath),
+            "type": "snap",
+            "install_path": f"/var/lib/snapd/snaps",
+            "executable_path": f"snap run {snap_name}",
+            "desktop_files": created_shortcuts,
+            "snap_name": snap_name,
+            "installed_at": str(self.filepath.name)
+        }
+        save_registry(registry)
+        self.finished_signal.emit(True, f"Cài đặt Snap {snap_name} thành công!")
 
 
-# --- THREAD DÀNH CHO GỠ CÀI ĐẶT DƯỚI NỀN ---
+# --- THREAD GỠ CÀI ĐẶT DƯỚI NỀN (QTHREAD) ---
 class UninstallWorker(QThread):
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, app_id):
+    def __init__(self, app_id, purge_config=False):
         super().__init__()
         self.app_id = app_id
+        self.purge_config = purge_config
 
     def run(self):
         registry = load_registry()
@@ -372,7 +583,8 @@ class UninstallWorker(QThread):
             return
 
         app_info = registry[self.app_id]
-        self.progress_signal.emit(f"Đang tiến hành gỡ bỏ ứng dụng: {app_info['name']}")
+        app_name = app_info.get("name", self.app_id)
+        self.progress_signal.emit(f"Đang tiến hành gỡ bỏ ứng dụng: {app_name}")
 
         # 1. Xóa các shortcut
         if "desktop_files" in app_info:
@@ -385,38 +597,98 @@ class UninstallWorker(QThread):
                         pass
 
         # 2. Xử lý gỡ theo loại
-        if app_info["type"] == "deb":
+        app_type = app_info.get("type", "")
+        if app_type == "deb":
             pkg_name = app_info.get("deb_package_name", self.app_id)
-            self.progress_signal.emit(f"Đang gỡ gói deb hệ thống (yêu cầu mật khẩu quản trị)...")
-            cmd = ["pkexec", "apt-get", "remove", "-y", pkg_name]
+            self.progress_signal.emit(f"Đang gỡ gói deb (yêu cầu mật khẩu quản trị)...")
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True)
+                proc = subprocess.run(["pkexec", "apt-get", "remove", "-y", pkg_name], capture_output=True, text=True)
                 if proc.returncode != 0:
                     self.finished_signal.emit(False, f"Gỡ gói deb thất bại hoặc bị hủy.\\nLog: {proc.stderr}")
                     return
-                # Chạy autoremove
                 subprocess.run(["pkexec", "apt-get", "autoremove", "-y"], capture_output=True, text=True)
             except Exception as e:
-                self.finished_signal.emit(False, f"Lỗi thực thi lệnh gỡ cài đặt: {str(e)}")
+                self.finished_signal.emit(False, f"Lỗi gỡ gói: {str(e)}")
                 return
                 
-        elif app_info["type"] in ["appimage", "archive"]:
+        elif app_type in ["appimage", "archive"]:
             install_path = Path(app_info["install_path"])
             if install_path.exists() and install_path.is_dir() and install_path.parent == APPS_DIR:
-                self.progress_signal.emit(f"Đang xóa thư mục ứng dụng tại apps/{install_path.name}...")
+                self.progress_signal.emit(f"Đang xóa thư mục cài đặt...")
                 try:
                     shutil.rmtree(install_path)
                 except Exception as e:
                     self.finished_signal.emit(False, f"Không thể xóa thư mục cài đặt: {str(e)}")
                     return
+            else:
+                self.progress_signal.emit("Bỏ qua xóa thư mục (đường dẫn hệ thống hoặc không an toàn).")
 
-        # 3. Xóa khỏi registry
+        elif app_type == "flatpak":
+            flatpak_id = app_info.get("flatpak_app_id", self.app_id)
+            self.progress_signal.emit(f"Đang gỡ Flatpak ở mức user...")
+            cmd = ["flatpak", "uninstall", "--user", "-y", flatpak_id]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    self.finished_signal.emit(False, f"Gỡ Flatpak thất bại: {proc.stderr}")
+                    return
+            except Exception as e:
+                self.finished_signal.emit(False, f"Lỗi chạy lệnh flatpak: {str(e)}")
+                return
+
+        elif app_type == "snap":
+            snap_name = app_info.get("snap_name", self.app_id)
+            self.progress_signal.emit(f"Đang gỡ Snap (yêu cầu mật khẩu quản trị)...")
+            cmd = ["pkexec", "snap", "remove", snap_name]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    self.finished_signal.emit(False, f"Gỡ Snap thất bại hoặc bị hủy.\\nLog: {proc.stderr}")
+                    return
+            except Exception as e:
+                self.finished_signal.emit(False, f"Lỗi chạy lệnh pkexec snap: {str(e)}")
+                return
+
+        # 3. Dọn cấu hình rác ở thư mục cá nhân nếu được chọn
+        if self.purge_config:
+            self.progress_signal.emit("Đang quét dọn cấu hình rác ở thư mục cá nhân...")
+            home_config = Path("/home/tanma/.config")
+            home_local = Path("/home/tanma/.local/share")
+            home_cache = Path("/home/tanma/.cache")
+            
+            # Khớp từ khóa tìm các thư mục liên quan
+            keywords = [self.app_id.lower(), app_name.lower(), app_name.lower().replace(" ", "")]
+            # Thêm các ký tự thường gặp khi viết thường/viết liền
+            
+            purged_folders = []
+            for base_dir in [home_config, home_local, home_cache]:
+                if not base_dir.exists():
+                    continue
+                for item in base_dir.iterdir():
+                    if item.is_dir():
+                        item_name_lower = item.name.lower()
+                        # Kiểm tra xem tên thư mục có khớp hoàn toàn hoặc chứa từ khóa
+                        if any(kw == item_name_lower or (len(kw) > 3 and kw in item_name_lower) for kw in keywords):
+                            # Không xóa nhầm các thư mục hệ thống cực kỳ quan trọng
+                            if item.name not in [".", "..", "applications", "flatpak", "systemd", "menus", "trash"]:
+                                try:
+                                    shutil.rmtree(item)
+                                    purged_folders.append(str(item))
+                                    self.progress_signal.emit(f"Đã dọn dẹp: {item.relative_to('/home/tanma')}")
+                                except Exception:
+                                    pass
+            if purged_folders:
+                self.progress_signal.emit(f"Đã dọn sạch {len(purged_folders)} thư mục cấu hình rác.")
+            else:
+                self.progress_signal.emit("Không phát hiện thư mục cấu hình rác nào đáng nghi.")
+
+        # 4. Xóa khỏi registry
         del registry[self.app_id]
         save_registry(registry)
-        self.finished_signal.emit(True, f"Đã gỡ cài đặt thành công {app_info['name']}!")
+        self.finished_signal.emit(True, f"Đã gỡ cài đặt hoàn chỉnh ứng dụng: {app_name}!")
 
 
-# --- TÙY CHỈNH WIDGET KÉO THẢ (DRAG & DROP ZONE) ---
+# --- WIDGET KÉO THẢ (DRAG & DROP ZONE) ---
 class DropZoneWidget(QFrame):
     fileDropped = pyqtSignal(str)
 
@@ -426,7 +698,6 @@ class DropZoneWidget(QFrame):
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
         self.setLineWidth(2)
         
-        # Stylesheet cho vùng kéo thả
         self.normal_style = """
             QFrame {
                 border: 2px dashed #3498db;
@@ -446,7 +717,6 @@ class DropZoneWidget(QFrame):
         """
         self.setStyleSheet(self.normal_style)
 
-        # Layout chứa text và icon
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
 
@@ -454,8 +724,8 @@ class DropZoneWidget(QFrame):
         self.label_icon.setFont(QFont("Segoe UI", 36))
         self.label_icon.setAlignment(Qt.AlignCenter)
         
-        self.label_text = QLabel("KÉO THẢ FILE CÀI ĐẶT VÀO ĐÂY\n(.deb, .AppImage, .zip, .tar.gz, .sh, .run)", self)
-        self.label_text.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.label_text = QLabel("KÉO THẢ FILE CÀI ĐẶT VÀO ĐÂY\n(.deb, .AppImage, .zip, .tar.gz, .flatpak, .snap, .sh, .run)", self)
+        self.label_text.setFont(QFont("Segoe UI", 11, QFont.Bold))
         self.label_text.setStyleSheet("color: #2c3e50;")
         self.label_text.setAlignment(Qt.AlignCenter)
 
@@ -495,26 +765,25 @@ class DropZoneWidget(QFrame):
             filepath = url.toLocalFile()
             if filepath:
                 self.fileDropped.emit(filepath)
-                break  # Chỉ xử lý file đầu tiên nếu kéo nhiều file
+                break
 
     def select_file_dialog(self):
-        file_filter = "File cài đặt Linux (*.deb *.AppImage *.zip *.tar.gz *.tar.xz *.tgz *.sh *.run);;Tất cả các file (*)"
+        file_filter = "File cài đặt Linux (*.deb *.AppImage *.zip *.tar.gz *.tar.xz *.tgz *.flatpak *.flatpakref *.snap *.sh *.run);;Tất cả file (*)"
         filepath, _ = QFileDialog.getOpenFileName(self, "Chọn file cài đặt", "/home/tanma/Downloads", file_filter)
         if filepath:
             self.fileDropped.emit(filepath)
 
 
-# --- CỬA SỔ CHÍNH ỨNG DỤNG ---
+# --- CỬA SỔ CHÍNH ---
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Linux App Installer Manager")
-        self.setMinimumSize(800, 600)
+        self.setWindowTitle("Linux App Installer Manager (AIaC 2026)")
+        self.setMinimumSize(850, 650)
         self.init_ui()
         self.refresh_table()
 
     def init_ui(self):
-        # Widget trung tâm
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
@@ -522,38 +791,37 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        # Header Title
-        title_label = QLabel("LINUX APP INSTALLER", self)
+        title_label = QLabel("LINUX APP INSTALLER MANAGER", self)
         title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
         title_label.setStyleSheet("color: #2c3e50;")
         title_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(title_label)
 
-        # Khởi tạo Drag & Drop Zone
+        # Drop Zone
         self.drop_zone = DropZoneWidget(self)
-        self.drop_zone.fileDropped.connect(self.start_install)
+        self.drop_zone.fileDropped.connect(self.check_and_start_install)
         main_layout.addWidget(self.drop_zone, stretch=2)
 
-        # Khởi tạo Log View
+        # Log View
         self.log_view = QTextEdit(self)
         self.log_view.setReadOnly(True)
-        self.log_view.setPlaceholderText("Trạng thái và nhật ký tiến trình cài đặt sẽ hiển thị tại đây...")
-        self.log_view.setMaximumHeight(100)
+        self.log_view.setPlaceholderText("Trạng thái tiến trình cài đặt...")
+        self.log_view.setMaximumHeight(110)
         self.log_view.setStyleSheet("background-color: #2c3e50; color: #ecf0f1; font-family: Courier; border-radius: 8px; padding: 6px;")
         main_layout.addWidget(self.log_view, stretch=1)
 
-        # Label Danh sách app đã cài
-        list_label = QLabel("Ứng dụng đã cài đặt qua Tool:", self)
-        list_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        list_label.setStyleSheet("color: #2c3e50; margin-top: 10px;")
+        list_label = QLabel("Danh sách ứng dụng đã quản lý:", self)
+        list_label.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        list_label.setStyleSheet("color: #2c3e50; margin-top: 5px;")
         main_layout.addWidget(list_label)
 
-        # Bảng danh sách ứng dụng
+        # Bảng danh sách app (Thêm cột Dung lượng)
         self.table = QTableWidget(self)
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Tên Ứng Dụng", "Định Dạng", "Nguồn File Cài", "Thao Tác"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Tên Ứng Dụng", "Định Dạng", "Dung Lượng", "Nguồn File Cài", "Thao Tác"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents) # Dung lượng
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents) # Thao tác
         self.table.setStyleSheet("""
             QTableWidget {
                 background-color: white;
@@ -570,12 +838,10 @@ class MainWindow(QMainWindow):
         """)
         main_layout.addWidget(self.table, stretch=3)
 
-        # Status Bar
         self.statusBar().showMessage("Sẵn sàng.")
 
     def log(self, text):
         self.log_view.append(text)
-        # Tự cuộn xuống cuối
         self.log_view.moveCursor(self.log_view.textCursor().End)
 
     def refresh_table(self):
@@ -584,14 +850,17 @@ class MainWindow(QMainWindow):
         
         self.table.setRowCount(len(registry))
         for row, (app_id, info) in enumerate(registry.items()):
-            # Tên App
+            # Tên
             self.table.setItem(row, 0, QTableWidgetItem(info.get("name", app_id)))
             # Định dạng
             self.table.setItem(row, 1, QTableWidgetItem(info.get("type", "Không rõ").upper()))
-            # Nguồn file
-            self.table.setItem(row, 2, QTableWidgetItem(info.get("installed_at", "Không rõ")))
+            # Dung lượng (Storage Tracker)
+            size_str = get_app_display_size(app_id, info)
+            self.table.setItem(row, 2, QTableWidgetItem(size_str))
+            # Nguồn
+            self.table.setItem(row, 3, QTableWidgetItem(info.get("installed_at", "Không rõ")))
             
-            # Nút gỡ cài đặt
+            # Nút gỡ
             btn_uninstall = QPushButton("Gỡ bỏ")
             btn_uninstall.setStyleSheet("""
                 QPushButton {
@@ -605,21 +874,65 @@ class MainWindow(QMainWindow):
                     background-color: #c0392b;
                 }
             """)
-            # Bắt sự kiện click
             btn_uninstall.clicked.connect(lambda checked, aid=app_id: self.confirm_uninstall(aid))
-            self.table.setCellWidget(row, 3, btn_uninstall)
+            self.table.setCellWidget(row, 4, btn_uninstall)
 
-    # --- BẮT ĐẦU CÀI ĐẶT ---
-    def start_install(self, filepath):
-        self.log_view.clear()
-        self.log(f"-> Nhận yêu cầu cài đặt file: {filepath}")
+    # --- KIỂM TRA TRÙNG LẶP & SMART UPDATE ---
+    def check_and_start_install(self, filepath):
+        path = Path(filepath)
+        app_name = get_clean_name(path)
+        app_id = app_name.lower().replace(" ", "_")
         
-        # Vô hiệu hóa vùng kéo thả để tránh spam khi đang cài
+        # Một số định dạng dùng app_id khác
+        filename = path.name.lower()
+        if filename.endswith(".deb"):
+            # Đối với deb ta parse tên từ file deb trước để tránh trùng lặp chính xác
+            try:
+                res = subprocess.run(["dpkg", "-I", str(path)], capture_output=True, text=True, check=True)
+                for line in res.stdout.splitlines():
+                    if line.strip().startswith("Package:"):
+                        app_id = line.split(":", 1)[1].strip()
+                        break
+            except Exception:
+                pass
+        elif filename.endswith(".flatpakref"):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("Name="):
+                            app_id = line.split("=", 1)[1].strip()
+                            break
+            except Exception:
+                pass
+
+        registry = load_registry()
+        is_upgrade = False
+        
+        if app_id in registry:
+            old_info = registry[app_id]
+            old_file = old_info.get("installed_at", "phiên bản cũ")
+            
+            reply = QMessageBox.question(
+                self, "Phát hiện phiên bản cũ",
+                f"Ứng dụng '{app_name}' đã được cài đặt qua tool (nguồn: {old_file}).\\n\\n"
+                f"Anh Tân có muốn chạy nâng cấp tự động (Smart Update), đè lên phiên bản cũ và giữ nguyên cấu hình/shortcut không?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                self.log("Hủy cài đặt do người dùng không đồng ý nâng cấp.")
+                return
+            is_upgrade = True
+            
+        self.start_install(filepath, is_upgrade)
+
+    def start_install(self, filepath, is_upgrade=False):
+        self.log_view.clear()
+        self.log(f"-> Nhận file cài đặt: {filepath}")
+        
         self.drop_zone.setEnabled(False)
         self.statusBar().showMessage("Đang thực hiện cài đặt...")
 
-        # Khởi chạy Thread
-        self.worker = InstallWorker(filepath)
+        self.worker = InstallWorker(filepath, is_upgrade)
         self.worker.progress_signal.connect(self.log)
         self.worker.finished_signal.connect(self.on_install_finished)
         self.worker.start()
@@ -637,23 +950,37 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Cài đặt thất bại.")
             QMessageBox.critical(self, "Lỗi cài đặt", message)
 
-    # --- BẮT ĐẦU GỠ CÀI ĐẶT ---
+    # --- CONFIRM UNINSTALL & PURGE CONFIG ---
     def confirm_uninstall(self, app_id):
         registry = load_registry()
-        app_name = registry.get(app_id, {}).get("name", app_id)
+        app_info = registry.get(app_id, {})
+        app_name = app_info.get("name", app_id)
         
-        reply = QMessageBox.question(self, "Xác nhận gỡ bỏ", 
-                                     f"Anh Tân có chắc chắn muốn gỡ cài đặt ứng dụng '{app_name}' không?",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        # Hỏi gỡ app
+        reply = QMessageBox.question(
+            self, "Xác nhận gỡ bỏ", 
+            f"Anh Tân có chắc chắn muốn gỡ cài đặt ứng dụng '{app_name}' không?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
         
         if reply == QMessageBox.Yes:
+            # Hỏi thêm dọn cấu hình rác (Purge Config Data)
+            purge_reply = QMessageBox.question(
+                self, "Dọn dẹp cấu hình rác",
+                f"Anh Tân có muốn dọn sạch dữ liệu cấu hình cá nhân của '{app_name}' (~/.config, ~/.local/share, ~/.cache) không?\\n\\n"
+                "Chọn 'Yes' để dọn sạch sẽ hệ thống 100%, chọn 'No' nếu muốn giữ lại cấu hình cũ.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            
+            purge_config = (purge_reply == QMessageBox.Yes)
+            
             self.log_view.clear()
             self.log(f"-> Nhận yêu cầu gỡ cài đặt: {app_name}")
             
             self.drop_zone.setEnabled(False)
             self.statusBar().showMessage("Đang thực hiện gỡ cài đặt...")
 
-            self.un_worker = UninstallWorker(app_id)
+            self.un_worker = UninstallWorker(app_id, purge_config)
             self.un_worker.progress_signal.connect(self.log)
             self.un_worker.finished_signal.connect(self.on_uninstall_finished)
             self.un_worker.start()
@@ -672,7 +999,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Lỗi gỡ cài đặt", message)
 
 
-# --- RUN APP ---
+# --- MAIN ---
 def main():
     app = QApplication(sys.argv)
     window = MainWindow()
