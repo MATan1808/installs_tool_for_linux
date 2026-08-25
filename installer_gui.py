@@ -42,7 +42,7 @@ try:
                                  QMessageBox, QFrame, QLineEdit, QProgressBar, QMenu, 
                                  QAction, QTabWidget, QSplitter, QComboBox)
     from PyQt5.QtCore import Qt, QThread, pyqtSignal
-    from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QCursor
+    from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QCursor, QColor
 except ImportError:
     error_msg = ("Ứng dụng Linux App Installer yêu cầu thư viện PyQt5.\\n\\n"
                  "Anh Tân vui lòng mở terminal và chạy lệnh sau để cài đặt:\\n"
@@ -776,12 +776,11 @@ class UninstallWorker(QThread):
                 self.finished_signal.emit(False, f"Lỗi chạy lệnh snap: {str(e)}")
                 return
 
-        # 3. DỌN CẤU HÌNH RÁC (PURGE DATA) (Wow 4)
+        # 3. DỌN CẤU HÌNH RÁC (PURGE DATA)
         if self.purge_config:
             self.progress_signal.emit("Bắt đầu quét dọn cấu hình rác của ứng dụng...")
             home_dir = Path.home()
             
-            # Các thư mục cấu hình rác tiềm năng
             target_subdirs = [
                 home_dir / ".config",
                 home_dir / ".local" / "share",
@@ -796,7 +795,6 @@ class UninstallWorker(QThread):
                     continue
                 for item in parent_dir.iterdir():
                     if item.is_dir() and not item.name.startswith('.'):
-                        # So khớp từ khóa
                         if any(kw in item.name.lower() for kw in keywords):
                             self.progress_signal.emit(f"Phát hiện thư mục rác: {item.relative_to(home_dir)}")
                             try:
@@ -853,7 +851,70 @@ class ScriptWorker(QThread):
             self.finished_signal.emit(False, f"Lỗi: {str(e)}")
 
 
-# --- PHÂN LOẠI & QUÉT AIaC SKILLS (SYM LINKS MANAGER) ---
+# --- PHÂN LOẠI, QUÉT VÀ THEO DÕI CẬP NHẬT GIT (GIT DIFF TRACKER) ---
+def get_git_head_commit():
+    """Lấy commit hash HEAD hiện tại của repo AIaC"""
+    try:
+        res = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(AIAC_DIR), capture_output=True, text=True, check=True)
+        return res.stdout.strip()
+    except Exception:
+        return ""
+
+def extract_affected_skills_from_diff(diff_output):
+    """Trích xuất các skill bị thay đổi từ output của git diff hoặc git log"""
+    affected = {}
+    for line in diff_output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split('\t')
+        if len(parts) >= 2:
+            status_code = parts[0][0] # 'A', 'M', 'D', 'R'
+            file_path = parts[1]
+            
+            skill_name = None
+            if file_path.startswith("360org/plugins/"):
+                sub_parts = file_path.split('/')
+                if len(sub_parts) >= 3:
+                    skill_name = sub_parts[2]
+            elif file_path.startswith("skills/"):
+                sub_parts = file_path.split('/')
+                if len(sub_parts) >= 2:
+                    skill_name = sub_parts[1]
+            
+            if skill_name:
+                if status_code == 'A':
+                    affected[skill_name] = "MỚI"
+                elif status_code == 'M' and affected.get(skill_name) != "MỚI":
+                    affected[skill_name] = "CẬP NHẬT"
+    return affected
+
+def get_recent_updated_skills():
+    """Quét 10 commit gần nhất để nạp sẵn danh sách skill vừa có thay đổi"""
+    try:
+        res = subprocess.run(
+            ["git", "log", "-n", "10", "--name-status", "--oneline"],
+            cwd=str(AIAC_DIR), capture_output=True, text=True, check=True
+        )
+        return extract_affected_skills_from_diff(res.stdout)
+    except Exception:
+        return {}
+
+def get_skill_git_history(src_path):
+    """Lấy 3 commit gần nhất liên quan trực tiếp đến skill này"""
+    try:
+        rel_path = src_path.relative_to(AIAC_DIR)
+        res = subprocess.run(
+            ["git", "log", "-3", "--format=<li><b>%h</b>: %s <span style='color: #7f8c8d; font-size: 9pt;'>(%cd)</span></li>", "--date=format:%d/%m/%Y %H:%M", "--", str(rel_path)],
+            cwd=str(AIAC_DIR), capture_output=True, text=True, check=True
+        )
+        logs = res.stdout.strip()
+        if logs:
+            return f"<ul style='margin: 4px 0; padding-left: 20px;'>{logs}</ul>"
+        return "<p style='color: #7f8c8d; font-size: 9pt; margin: 4px 0;'>Chưa có commit riêng ghi nhận.</p>"
+    except Exception:
+        return "<p style='color: #7f8c8d; font-size: 9pt; margin: 4px 0;'>Không thể đọc Git log riêng.</p>"
+
 def get_skill_category(name):
     """Phân loại kỹ năng dựa trên tên của nó"""
     name_lower = name.lower()
@@ -1065,6 +1126,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Linux App & AIaC Skill Manager (AIaC 2026)")
         self.setMinimumSize(1000, 750)
         self.all_skills = {}
+        self.pull_old_head = ""
+        self.updated_skills = get_recent_updated_skills()
         self.init_ui()
         self.refresh_table()
         self.refresh_skills_table()
@@ -1230,12 +1293,13 @@ class MainWindow(QMainWindow):
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(12)
         
-        lbl_filter = QLabel("<b>Phân loại nhóm kỹ năng:</b>", self)
+        lbl_filter = QLabel("<b>Bộ lọc kỹ năng:</b>", self)
         lbl_filter.setFont(QFont("Segoe UI", 10))
         
         self.filter_combo = QComboBox(self)
         self.filter_combo.addItems([
             "Tất cả các kỹ năng",
+            "🌟 Kỹ năng Mới / Vừa cập nhật",
             "📱 Mobile & App (Flutter, iOS, Hermes)",
             "🐍 Odoo & Backend (Python, Database)",
             "🧪 Tester & Auto Test (Unit Test, Automation)",
@@ -1246,7 +1310,6 @@ class MainWindow(QMainWindow):
         self.filter_combo.setStyleSheet("padding: 6px; border: 1px solid #bdc3c7; border-radius: 6px; background-color: white;")
         self.filter_combo.currentIndexChanged.connect(self.refresh_skills_table)
         
-        # Ô tìm kiếm nhanh (Wow 9)
         self.search_input = QLineEdit(self)
         self.search_input.setPlaceholderText("🔍 Tìm kiếm kỹ năng (nhập tên skill)...")
         self.search_input.setStyleSheet("padding: 6px; border: 1px solid #bdc3c7; border-radius: 6px; background-color: white;")
@@ -1282,11 +1345,11 @@ class MainWindow(QMainWindow):
         # Cột bên phải: Panel chi tiết kỹ năng
         self.detail_panel = QTextEdit(self)
         self.detail_panel.setReadOnly(True)
-        self.detail_panel.setPlaceholderText("💡 Vui lòng click chọn một Kỹ năng bên bảng trái để xem mô tả chi tiết, hướng dẫn cách sử dụng và dự án phù hợp...")
+        self.detail_panel.setPlaceholderText("💡 Vui lòng click chọn một Kỹ năng bên bảng trái để xem mô tả chi tiết, hướng dẫn cách sử dụng, dự án phù hợp và lịch sử commit...")
         self.detail_panel.setStyleSheet("background-color: white; border: 1px solid #bdc3c7; border-radius: 8px; padding: 12px; font-size: 11pt;")
         main_splitter.addWidget(self.detail_panel)
         
-        main_splitter.setSizes([500, 450])
+        main_splitter.setSizes([520, 480])
         tab_aiac_layout.addWidget(main_splitter, stretch=3)
 
         # Log View Tab 2 ở dưới cùng
@@ -1307,6 +1370,10 @@ class MainWindow(QMainWindow):
     def aiac_log(self, text):
         self.aiac_log_view.append(text)
         self.aiac_log_view.moveCursor(self.aiac_log_view.textCursor().End)
+
+    def log(self, text):
+        self.log_view.append(text)
+        self.log_view.moveCursor(self.log_view.textCursor().End)
 
     # --- REFRESH APP INSTALLER TABLE ---
     def refresh_table(self):
@@ -1344,7 +1411,7 @@ class MainWindow(QMainWindow):
             action_layout.addWidget(btn_uninstall)
             self.table.setCellWidget(row, 4, action_widget)
 
-    # --- REFRESH AIaC SKILLS TABLE (LỌC THEO PHÂN LOẠI & TÌM KIẾM NHANH) ---
+    # --- REFRESH AIaC SKILLS TABLE (LỌC THEO PHÂN LOẠI, TÌM KIẾM & HUY HIỆU MỚI) ---
     def refresh_skills_table(self):
         self.skills_table.setRowCount(0)
         self.all_skills = scan_aiac_skills()
@@ -1353,8 +1420,10 @@ class MainWindow(QMainWindow):
         filter_text = self.filter_combo.currentText()
         search_text = self.search_input.text().strip().lower()
         
+        only_recent_updates = ("Mới" in filter_text or "cập nhật" in filter_text.lower()) and filter_index == 1
+        
         target_category = ""
-        if filter_index > 0:
+        if filter_index > 1:
             if "Mobile" in filter_text: target_category = "📱 Mobile & App"
             elif "Odoo" in filter_text: target_category = "🐍 Odoo & Backend"
             elif "Tester" in filter_text: target_category = "🧪 Tester & Auto Test"
@@ -1364,10 +1433,13 @@ class MainWindow(QMainWindow):
 
         self.filtered_skill_names = []
         for name, info in self.all_skills.items():
-            # 1. Lọc theo nhóm phân loại
+            # 1. Lọc theo nhóm Mới / Cập nhật
+            if only_recent_updates and name not in self.updated_skills:
+                continue
+            # 2. Lọc theo nhóm phân loại
             if target_category and info["category"] != target_category:
                 continue
-            # 2. Lọc theo từ khóa tìm kiếm (Wow 9)
+            # 3. Lọc theo từ khóa tìm kiếm
             if search_text and search_text not in name.lower():
                 continue
             self.filtered_skill_names.append(name)
@@ -1376,14 +1448,32 @@ class MainWindow(QMainWindow):
         for row, name in enumerate(self.filtered_skill_names):
             info = self.all_skills[name]
             
-            self.skills_table.setItem(row, 0, QTableWidgetItem(name))
+            # Tên skill kèm huy hiệu MỚI / CẬP NHẬT (Wow 10)
+            display_name = name
+            name_item = QTableWidgetItem()
+            if name in self.updated_skills:
+                tag_type = self.updated_skills[name]
+                if tag_type == "MỚI":
+                    display_name = f"✨ [MỚI]  {name}"
+                    name_item.setForeground(QColor("#8e44ad")) # Tím đậm
+                else:
+                    display_name = f"🔄 [UPDATE]  {name}"
+                    name_item.setForeground(QColor("#d35400")) # Cam đậm
+                font = name_item.font()
+                font.setBold(True)
+                name_item.setFont(font)
             
+            name_item.setText(display_name)
+            self.skills_table.setItem(row, 0, name_item)
+            
+            # Trạng thái
             status_item = QTableWidgetItem(info["status"])
             status_item.setForeground(Qt.white)
             status_item.setBackground(QApplication.palette().color(QApplication.palette().Window))
             status_item.setTextAlignment(Qt.AlignCenter)
             self.skills_table.setItem(row, 1, status_item)
             
+            # Button kích hoạt/tắt symlink
             btn_action = QPushButton()
             if info["status"] == "Đã kích hoạt":
                 btn_action.setText("Tắt")
@@ -1402,7 +1492,7 @@ class MainWindow(QMainWindow):
                 
             self.skills_table.setCellWidget(row, 2, btn_action)
 
-    # --- SỰ KIỆN CLICK CHỌN SKILL ĐỂ HIỂN THỊ MÔ TẢ ---
+    # --- SỰ KIỆN CLICK CHỌN SKILL ĐỂ HIỂN THỊ MÔ TẢ & LỊCH SỬ COMMIT (Wow 10) ---
     def on_skill_selected(self, row, col):
         if not (0 <= row < len(self.filtered_skill_names)):
             return
@@ -1412,12 +1502,32 @@ class MainWindow(QMainWindow):
         md_content = get_skill_markdown_content(info["src_path"])
         html_content = markdown_to_html(md_content)
         
+        # Banner đánh dấu cập nhật mới
+        update_badge_html = ""
+        if name in self.updated_skills:
+            tag_type = self.updated_skills[name]
+            badge_color = "#8e44ad" if tag_type == "MỚI" else "#d35400"
+            badge_icon = "✨" if tag_type == "MỚI" else "🔄"
+            update_badge_html = f"""
+            <div style="background-color: #fff9e6; border: 1px solid #ffeaa7; padding: 6px 10px; border-radius: 4px; margin-top: 6px;">
+                <span style="color: {badge_color}; font-weight: bold;">{badge_icon} Kỹ năng này vừa được {tag_type} trong các bản commit gần nhất!</span>
+            </div>
+            """
+        
+        # Lịch sử Git riêng của skill
+        git_history_html = get_skill_git_history(info["src_path"])
+        
         header_html = f"""
         <div style="background-color: #f8f9fa; border: 1px solid #ddd; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
             <h2 style="color: #2c3e50; margin: 0 0 6px 0;">{name}</h2>
             <b>Phân loại nhóm:</b> <span style="color: #2980b9;">{info['category']}</span><br>
             <b>Trạng thái Antigravity:</b> <span style="color: {info.get('color', '#2c3e50')}; font-weight: bold;">{info['status']}</span><br>
             <b>Đường dẫn nguồn:</b> <code style="font-size: 9pt;">{info['src_path']}</code>
+            {update_badge_html}
+            <div style="margin-top: 8px;">
+                <b>Lịch sử commit gần nhất của skill:</b>
+                {git_history_html}
+            </div>
         </div>
         """
         
@@ -1491,21 +1601,47 @@ class MainWindow(QMainWindow):
         self.btn_sync_all.setEnabled(True)
         self.btn_update_resource.setEnabled(True)
         
-        self.refresh_skills_table()
         self.update_git_label()
         
         if success:
             self.aiac_log(f"[XONG] {title} hoàn tất thành công!")
             self.statusBar().showMessage(f"{title} thành công!")
             send_system_notification(title, "Tiến trình đồng bộ hoàn tất thành công!")
-            QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành thành công!")
+            
+            # Xử lý đặc thù cho Git Pull (Đối chiếu commit diff)
+            if "Git Pull" in title:
+                new_head = get_git_head_commit()
+                if self.pull_old_head and new_head and self.pull_old_head != new_head:
+                    try:
+                        diff_res = subprocess.run(
+                            ["git", "diff", "--name-status", self.pull_old_head, new_head],
+                            cwd=str(AIAC_DIR), capture_output=True, text=True, check=True
+                        )
+                        new_affected = extract_affected_skills_from_diff(diff_res.stdout)
+                        if new_affected:
+                            self.updated_skills.update(new_affected)
+                            new_skills_list = [f"• {k} ({v})" for k, v in new_affected.items()]
+                            msg = f"Đã cập nhật Git thành công!\n\nPhát hiện {len(new_skills_list)} kỹ năng Mới / Cập nhật:\n" + "\n".join(new_skills_list)
+                            QMessageBox.information(self, "Phát hiện Kỹ năng Mới", msg)
+                            self.filter_combo.setCurrentIndex(1) # Chuyển sang lọc "🌟 Kỹ năng Mới / Vừa cập nhật"
+                        else:
+                            QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành (không có skill nào thay đổi)!")
+                    except Exception:
+                        QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành thành công!")
+                else:
+                    QMessageBox.information(self, "Thành công", "Mã nguồn AIaC đã là phiên bản mới nhất (không có thay đổi mới)!")
+            else:
+                QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành thành công!")
         else:
             self.aiac_log(f"[LỖI] {title} thất bại: {message}")
             self.statusBar().showMessage(f"{title} thất bại.")
             send_system_notification(f"{title} thất bại", message)
             QMessageBox.critical(self, "Lỗi thực thi", f"{title} thất bại: {message}")
+            
+        self.refresh_skills_table()
 
     def run_git_pull(self):
+        self.pull_old_head = get_git_head_commit()
         self.start_script_worker(["git", "pull"], "Git Pull Cập nhật AIaC")
 
     def run_install_aiac(self):
