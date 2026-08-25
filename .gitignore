@@ -1,0 +1,8 @@
+apps/
+registry.json
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+*.desktop
+*.log
