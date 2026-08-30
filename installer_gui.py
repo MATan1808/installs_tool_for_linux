@@ -24,15 +24,17 @@ REGISTRY_PATH = BASE_DIR / "registry.json"
 DESKTOP_DIR = Path("/home/tanma/Desktop")
 USER_APPLICATIONS_DIR = Path("/home/tanma/.local/share/applications")
 
-# Cấu hình đường dẫn AIaC và Antigravity
+# Cấu hình đường dẫn AIaC, Claude Code và Antigravity
 AIAC_DIR = Path("/media/tanma/DATA/aiac")
 GEMINI_SKILLS_DIR = Path("/home/tanma/.gemini/config/skills")
+CLAUDE_SKILLS_DIR = Path("/home/tanma/.claude/skills")
 
 # Tạo các thư mục nếu chưa tồn tại
 APPS_DIR.mkdir(parents=True, exist_ok=True)
 DESKTOP_DIR.mkdir(parents=True, exist_ok=True)
 USER_APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
 GEMINI_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+CLAUDE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Kiểm tra thư viện PyQt5, nếu thiếu dùng zenity để thông báo trực quan
 try:
@@ -959,32 +961,30 @@ def scan_aiac_skills():
                         "type": "Skill Core"
                     }
                     
-    # 3. Quét kiểm tra symlink và phân loại
+    # 3. Quét kiểm tra symlink trên cả 2 nền tảng: Claude Code & Antigravity
     for name, info in skills.items():
-        dst_path = GEMINI_SKILLS_DIR / name
+        dst_gemini = GEMINI_SKILLS_DIR / name
+        dst_claude = CLAUDE_SKILLS_DIR / name
         info["category"] = get_skill_category(name)
         
-        if not dst_path.exists() and not dst_path.is_symlink():
-            info["status"] = "Chưa cài đặt"
-            info["color"] = "#64748b" # Slate
-        elif dst_path.is_symlink():
-            try:
-                target = dst_path.readlink()
-                src_resolved = info["src_path"].resolve()
-                target_resolved = Path(os.path.normpath(os.path.join(GEMINI_SKILLS_DIR, target))).resolve()
-                
-                if src_resolved == target_resolved:
-                    info["status"] = "Đã kích hoạt"
-                    info["color"] = "#10b981" # Emerald
-                else:
-                    info["status"] = "Xung đột"
-                    info["color"] = "#f59e0b" # Amber
-            except Exception:
-                info["status"] = "Symlink lỗi"
-                info["color"] = "#ef4444" # Red
+        gemini_active = dst_gemini.is_symlink()
+        claude_active = dst_claude.is_symlink()
+        
+        info["gemini_active"] = gemini_active
+        info["claude_active"] = claude_active
+
+        if gemini_active and claude_active:
+            info["status"] = "Đã bật (Claude & Antigravity)"
+            info["color"] = "#10b981" # Emerald
+        elif gemini_active:
+            info["status"] = "Đã bật (Antigravity)"
+            info["color"] = "#0284c7" # Sky Blue
+        elif claude_active:
+            info["status"] = "Đã bật (Claude Code)"
+            info["color"] = "#8b5cf6" # Violet
         else:
-            info["status"] = "Lỗi thư mục"
-            info["color"] = "#ef4444"
+            info["status"] = "Chưa kích hoạt"
+            info["color"] = "#64748b" # Slate
             
     return skills
 
@@ -1460,22 +1460,22 @@ class MainWindow(QMainWindow):
         tab_aiac_layout.setContentsMargins(16, 16, 16, 16)
         tab_aiac_layout.setSpacing(12)
 
-        # Hướng dẫn & Giải thích ý nghĩa các nút / cơ chế
+        # Hướng dẫn & Trạng thái đồng bộ kép cho Claude Code & Antigravity
         help_frame = QFrame(self)
-        help_frame.setStyleSheet("background-color: #eff6ff; border-left: 4px solid #3b82f6; border-radius: 6px; padding: 10px;")
+        help_frame.setStyleSheet("background-color: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #10b981; border-radius: 8px; padding: 12px;")
         help_layout = QVBoxLayout(help_frame)
-        help_layout.setSpacing(3)
+        help_layout.setSpacing(6)
         help_layout.setContentsMargins(8, 4, 8, 4)
         
-        lbl_help_title = QLabel("<b>Hướng dẫn & Cơ chế vận hành AIaC:</b>", self)
-        lbl_help_title.setFont(QFont("DejaVu Sans", 9, QFont.Bold))
-        lbl_help_title.setStyleSheet("color: #1e40af; border: none;")
+        lbl_help_title = QLabel("ĐỒNG BỘ 2 TRONG 1: CLAUDE CODE & ANTIGRAVITY (AIaC HUB)", self)
+        lbl_help_title.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
+        lbl_help_title.setStyleSheet("color: #065f46; border: none;")
         
         lbl_help_desc = QLabel(
-            "• <b>Kích hoạt / Tắt</b>: Bật (tạo symlink) để Antigravity nhận diện kỹ năng, "
-            "hoặc Tắt (xóa symlink) khi không dùng để giảm tải bộ nhớ context, <b>tiết kiệm token</b>.<br>"
-            "• <b>Kiểm tra & Pull Git</b>: Kéo code, prompt và các skill mới nhất của AIaC từ máy chủ về local.<br>"
-            "• <b>Đồng bộ tất cả</b>: Kích hoạt liên kết hàng loạt tất cả skill vào thư mục config Antigravity.",
+            "• <b>Áp dụng cho Claude Code:</b> Tự động liên kết vào <code>~/.claude/skills/</code> và nạp tự động qua 5 hooks.<br>"
+            "• <b>Áp dụng cho Antigravity:</b> Tự động liên kết vào <code>~/.gemini/config/skills/</code> để Antigravity nhận diện ngay.<br>"
+            "• <b>Kiểm tra & Pull Git:</b> Kéo toàn bộ prompt, rules và kỹ năng mới nhất từ kho AIaC về máy tính.<br>"
+            "• <b>Đồng bộ tất cả:</b> Kích hoạt và cập nhật 100% bộ kỹ năng cho cả 2 trợ lý AI cùng một lúc.",
             self
         )
         lbl_help_desc.setFont(QFont("DejaVu Sans", 9))
@@ -1486,31 +1486,64 @@ class MainWindow(QMainWindow):
         help_layout.addWidget(lbl_help_desc)
         tab_aiac_layout.addWidget(help_frame)
 
-        # Header Git Info
-        git_header = QFrame(self)
-        git_header.setStyleSheet("background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px 12px;")
-        git_header_layout = QVBoxLayout(git_header)
-        git_header_layout.setSpacing(2)
-        git_header_layout.setContentsMargins(6, 4, 6, 4)
+        # Header Git Info & Dual Platform Status Cards
+        status_frame = QFrame(self)
+        status_frame.setStyleSheet("background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px;")
+        status_layout = QVBoxLayout(status_frame)
+        status_layout.setSpacing(6)
+        status_layout.setContentsMargins(8, 6, 8, 6)
         
-        self.lbl_git_path = QLabel(f"<b>Đường dẫn AIaC local:</b> {AIAC_DIR}", self)
-        self.lbl_git_path.setFont(QFont("DejaVu Sans", 10))
+        self.lbl_git_path = QLabel(f"<b>Kho nguồn AIaC:</b> <code>{AIAC_DIR}</code>", self)
+        self.lbl_git_path.setFont(QFont("DejaVu Sans", 9))
         self.lbl_git_path.setStyleSheet("color: #334155; border: none;")
         
         self.lbl_git_info = QLabel("<b>Commit hiện tại:</b> Đang đọc...", self)
-        self.lbl_git_info.setFont(QFont("DejaVu Sans", 10))
+        self.lbl_git_info.setFont(QFont("DejaVu Sans", 9))
         self.lbl_git_info.setStyleSheet("color: #334155; border: none;")
         self.update_git_label()
+
+        # Hai thẻ hiển thị trạng thái đích
+        dual_status_layout = QHBoxLayout()
+        dual_status_layout.setSpacing(10)
         
-        git_header_layout.addWidget(self.lbl_git_path)
-        git_header_layout.addWidget(self.lbl_git_info)
-        tab_aiac_layout.addWidget(git_header)
+        card_claude = QFrame(status_frame)
+        card_claude.setStyleSheet("background-color: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 6px; padding: 6px 10px;")
+        c_l = QVBoxLayout(card_claude)
+        c_l.setSpacing(2)
+        lbl_c_title = QLabel("🤖 Claude Code (Anthropic)", card_claude)
+        lbl_c_title.setFont(QFont("DejaVu Sans", 9, QFont.Bold))
+        lbl_c_title.setStyleSheet("color: #6d28d9; border: none;")
+        self.lbl_claude_status = QLabel("Thư mục: ~/.claude/skills/ • Trạng thái: Sẵn sàng", card_claude)
+        self.lbl_claude_status.setFont(QFont("DejaVu Sans", 8))
+        self.lbl_claude_status.setStyleSheet("color: #4b5563; border: none;")
+        c_l.addWidget(lbl_c_title)
+        c_l.addWidget(self.lbl_claude_status)
+        dual_status_layout.addWidget(card_claude)
+
+        card_gemini = QFrame(status_frame)
+        card_gemini.setStyleSheet("background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 6px 10px;")
+        g_l = QVBoxLayout(card_gemini)
+        g_l.setSpacing(2)
+        lbl_g_title = QLabel("🚀 Antigravity (Google Gemini)", card_gemini)
+        lbl_g_title.setFont(QFont("DejaVu Sans", 9, QFont.Bold))
+        lbl_g_title.setStyleSheet("color: #1d4ed8; border: none;")
+        self.lbl_gemini_status = QLabel("Thư mục: ~/.gemini/config/skills/ • Trạng thái: Sẵn sàng", card_gemini)
+        self.lbl_gemini_status.setFont(QFont("DejaVu Sans", 8))
+        self.lbl_gemini_status.setStyleSheet("color: #4b5563; border: none;")
+        g_l.addWidget(lbl_g_title)
+        g_l.addWidget(self.lbl_gemini_status)
+        dual_status_layout.addWidget(card_gemini)
+
+        status_layout.addWidget(self.lbl_git_path)
+        status_layout.addWidget(self.lbl_git_info)
+        status_layout.addLayout(dual_status_layout)
+        tab_aiac_layout.addWidget(status_frame)
 
         # Buttons Control layout
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
         
-        self.btn_git_pull = QPushButton("Kiểm tra & Pull Git", self)
+        self.btn_git_pull = QPushButton("📥 Kiểm tra & Pull Git", self)
         self.btn_git_pull.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_git_pull.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_git_pull.setStyleSheet("""
@@ -1520,7 +1553,7 @@ class MainWindow(QMainWindow):
         """)
         self.btn_git_pull.clicked.connect(self.run_git_pull)
         
-        self.btn_sync_all = QPushButton("Đồng bộ tất cả (install-aiac)", self)
+        self.btn_sync_all = QPushButton("🔄 Đồng bộ 100% Skill (Claude & Antigravity)", self)
         self.btn_sync_all.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_sync_all.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_sync_all.setStyleSheet("""
@@ -1530,7 +1563,7 @@ class MainWindow(QMainWindow):
         """)
         self.btn_sync_all.clicked.connect(self.run_install_aiac)
         
-        self.btn_update_resource = QPushButton("Cập nhật Resource", self)
+        self.btn_update_resource = QPushButton("📦 Cập nhật Resource", self)
         self.btn_update_resource.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_update_resource.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_update_resource.setStyleSheet("""
@@ -1689,6 +1722,14 @@ class MainWindow(QMainWindow):
     def refresh_skills_table(self):
         self.skills_table.setRowCount(0)
         self.all_skills = scan_aiac_skills()
+
+        # Cập nhật số lượng kỹ năng thực tế trên 2 nền tảng
+        if hasattr(self, 'lbl_claude_status') and hasattr(self, 'lbl_gemini_status'):
+            total_skills = len(self.all_skills)
+            claude_count = sum(1 for s in self.all_skills.values() if s.get("claude_active"))
+            gemini_count = sum(1 for s in self.all_skills.values() if s.get("gemini_active"))
+            self.lbl_claude_status.setText(f"Thư mục: ~/.claude/skills/ • Đã kích hoạt: <b>{claude_count}/{total_skills} skills</b>")
+            self.lbl_gemini_status.setText(f"Thư mục: ~/.gemini/config/skills/ • Đã kích hoạt: <b>{gemini_count}/{total_skills} skills</b>")
         
         filter_index = self.filter_combo.currentIndex()
         filter_text = self.filter_combo.currentText()
@@ -1758,7 +1799,8 @@ class MainWindow(QMainWindow):
             
             btn_action = QPushButton()
             btn_action.setCursor(QCursor(Qt.PointingHandCursor))
-            if info["status"] == "Đã kích hoạt":
+            is_active = info.get("gemini_active") or info.get("claude_active")
+            if is_active:
                 btn_action.setText("Tắt")
                 btn_action.setStyleSheet("""
                     QPushButton { background-color: #f59e0b; color: #ffffff; border-radius: 6px; padding: 4px 14px; font-weight: bold; border: none; }
@@ -1818,22 +1860,35 @@ class MainWindow(QMainWindow):
         
         self.detail_panel.setHtml(header_html + html_content)
 
-    # --- BẬT/TẮT SYM LINK SKILL ĐƠN LẺ ---
+    # --- BẬT/TẮT SYM LINK SKILL ĐƠN LẺ (ĐỒNG BỘ CẢ CLAUDE CODE & ANTIGRAVITY) ---
     def activate_skill(self, name, src_path):
-        dst_path = GEMINI_SKILLS_DIR / name
+        dst_gemini = GEMINI_SKILLS_DIR / name
+        dst_claude = CLAUDE_SKILLS_DIR / name
+        
         try:
-            if dst_path.exists() or dst_path.is_symlink():
-                if dst_path.is_symlink():
-                    dst_path.unlink()
-                elif dst_path.is_dir():
-                    shutil.rmtree(dst_path)
+            # 1. Liên kết vào Antigravity
+            if dst_gemini.exists() or dst_gemini.is_symlink():
+                if dst_gemini.is_symlink():
+                    dst_gemini.unlink()
+                elif dst_gemini.is_dir():
+                    shutil.rmtree(dst_gemini)
                 else:
-                    dst_path.unlink()
-            
-            os.symlink(src_path, dst_path)
-            self.aiac_log(f"[OK] Đã tạo liên kết symlink cho skill: {name}")
-            self.statusBar().showMessage(f"Đã kích hoạt skill {name} thành công!", 3000)
-            send_system_notification("Kích hoạt Skill thành công", f"Skill '{name}' đã được liên kết vào Antigravity.")
+                    dst_gemini.unlink()
+            os.symlink(src_path, dst_gemini)
+
+            # 2. Liên kết vào Claude Code
+            if dst_claude.exists() or dst_claude.is_symlink():
+                if dst_claude.is_symlink():
+                    dst_claude.unlink()
+                elif dst_claude.is_dir():
+                    shutil.rmtree(dst_claude)
+                else:
+                    dst_claude.unlink()
+            os.symlink(src_path, dst_claude)
+
+            self.aiac_log(f"[OK] Đã kích hoạt skill '{name}' cho cả Claude Code & Antigravity!")
+            self.statusBar().showMessage(f"Đã kích hoạt {name} cho Claude Code & Antigravity!", 3000)
+            send_system_notification("Kích hoạt Skill thành công", f"Skill '{name}' đã được kích hoạt cho cả Claude Code và Antigravity.")
         except Exception as e:
             self.aiac_log(f"[LỖI] Không thể kích hoạt skill {name}: {str(e)}")
             QMessageBox.critical(self, "Lỗi kích hoạt", f"Không thể tạo symlink cho skill {name}: {str(e)}")
@@ -1846,15 +1901,17 @@ class MainWindow(QMainWindow):
             pass
 
     def deactivate_skill(self, name):
-        dst_path = GEMINI_SKILLS_DIR / name
+        dst_gemini = GEMINI_SKILLS_DIR / name
+        dst_claude = CLAUDE_SKILLS_DIR / name
         try:
-            if dst_path.is_symlink():
-                dst_path.unlink()
-                self.aiac_log(f"[OK] Đã gỡ liên kết symlink cho skill: {name}")
-                self.statusBar().showMessage(f"Đã tắt skill {name} thành công!", 3000)
-                send_system_notification("Gỡ bỏ Skill thành công", f"Skill '{name}' đã được ngắt kết nối.")
-            else:
-                QMessageBox.warning(self, "Không thể gỡ", f"Đường dẫn '{dst_path}' không phải symlink an toàn. Vui lòng kiểm tra thủ công.")
+            if dst_gemini.is_symlink():
+                dst_gemini.unlink()
+            if dst_claude.is_symlink():
+                dst_claude.unlink()
+                
+            self.aiac_log(f"[OK] Đã tắt skill '{name}' cho cả Claude Code & Antigravity.")
+            self.statusBar().showMessage(f"Đã tắt skill {name} thành công!", 3000)
+            send_system_notification("Gỡ bỏ Skill thành công", f"Skill '{name}' đã được tắt trên cả Claude Code và Antigravity.")
         except Exception as e:
             self.aiac_log(f"[LỖI] Không thể tắt skill {name}: {str(e)}")
             QMessageBox.critical(self, "Lỗi", f"Không thể xóa symlink: {str(e)}")
@@ -1863,6 +1920,8 @@ class MainWindow(QMainWindow):
         try:
             row = self.filtered_skill_names.index(name)
             self.on_skill_selected(row, 0)
+        except Exception:
+            pass
         except Exception:
             pass
 
@@ -1906,17 +1965,32 @@ class MainWindow(QMainWindow):
                         if new_affected:
                             self.updated_skills.update(new_affected)
                             new_skills_list = [f"• {k} ({v})" for k, v in new_affected.items()]
-                            msg = f"Đã cập nhật Git thành công!\n\nPhát hiện {len(new_skills_list)} kỹ năng Mới / Cập nhật:\n" + "\n".join(new_skills_list)
-                            QMessageBox.information(self, "Phát hiện Kỹ năng Mới", msg)
+                            msg = (
+                                "🎉 <b>ĐÃ CẬP NHẬT GIT THÀNH CÔNG!</b><br><br>"
+                                f"Phát hiện <b>{len(new_skills_list)} kỹ năng</b> Mới / Vừa Cập Nhật:<br>"
+                                + "<br>".join(new_skills_list) +
+                                "<br><br>💡 Bộ kỹ năng đã sẵn sàng áp dụng cho cả <b>Claude Code</b> và <b>Antigravity</b>!"
+                            )
+                            QMessageBox.information(self, "Phát Hiện Kỹ Năng Mới", msg)
                             self.filter_combo.setCurrentIndex(1) # Chuyển sang lọc "[MỚI] Kỹ năng Mới / Vừa cập nhật"
                         else:
-                            QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành (không có skill nào thay đổi)!")
+                            QMessageBox.information(self, "Thành Công", f"🎉 {title} đã hoàn thành (không có skill nào thay đổi)!")
                     except Exception:
-                        QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành thành công!")
+                        QMessageBox.information(self, "Thành Công", f"🎉 {title} đã hoàn thành thành công!")
                 else:
-                    QMessageBox.information(self, "Thành công", "Mã nguồn AIaC đã là phiên bản mới nhất (không có thay đổi mới)!")
+                    QMessageBox.information(self, "Phiên Bản Mới Nhất", "✅ Mã nguồn AIaC trên máy đã là phiên bản mới nhất (không có thay đổi mới)!")
+            elif "install-aiac" in title or "Đồng bộ" in title:
+                c_count = len(list(CLAUDE_SKILLS_DIR.glob("*"))) if CLAUDE_SKILLS_DIR.exists() else 0
+                g_count = len(list(GEMINI_SKILLS_DIR.glob("*"))) if GEMINI_SKILLS_DIR.exists() else 0
+                QMessageBox.information(
+                    self, "Đồng Bộ Thành Công",
+                    "🎉 <b>ĐÃ ĐỒNG BỘ 100% KỸ NĂNG CHO CẢ 2 NỀN TẢNG AI!</b><br><br>"
+                    f"• 🤖 <b>Claude Code:</b> Đã liên kết <b>{c_count} skills</b> vào <code>~/.claude/skills/</code><br>"
+                    f"• 🚀 <b>Antigravity:</b> Đã liên kết <b>{g_count} skills</b> vào <code>~/.gemini/config/skills/</code><br><br>"
+                    "Cả 2 trợ lý AI trên máy tính của anh Tân hiện đã được trang bị đầy đủ bộ kỹ năng mới nhất!"
+                )
             else:
-                QMessageBox.information(self, "Thành công", f"{title} đã hoàn thành thành công!")
+                QMessageBox.information(self, "Thành Công", f"🎉 {title} đã hoàn thành thành công!")
         else:
             self.aiac_log(f"[LỖI] {title} thất bại: {message}")
             self.statusBar().showMessage(f"{title} thất bại.")
