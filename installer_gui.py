@@ -42,7 +42,8 @@ try:
                                  QHBoxLayout, QLabel, QPushButton, QTableWidget, 
                                  QTableWidgetItem, QHeaderView, QTextEdit, QFileDialog, 
                                  QMessageBox, QFrame, QLineEdit, QProgressBar, QMenu, 
-                                 QAction, QTabWidget, QSplitter, QComboBox, QGraphicsDropShadowEffect)
+                                 QAction, QTabWidget, QSplitter, QComboBox, QGraphicsDropShadowEffect,
+                                 QScrollArea)
     from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
     from PyQt5.QtGui import QDragEnterEvent, QDropEvent, QFont, QCursor, QColor, QPalette, QIcon
 except ImportError:
@@ -1016,9 +1017,6 @@ def get_skill_markdown_content(src_path):
     return ""
 
 def markdown_to_html(md_text):
-    if not md_text.strip():
-        return "<p style='color: #64748b;'>Không có file hướng dẫn hoặc mô tả SKILL.md/README.md cho skill này.</p>"
-        
     md_text = re.sub(r'^---.*?---', '', md_text, flags=re.DOTALL)
     html = md_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     html = re.sub(r'```(.*?)\n(.*?)```', r'<pre style="background-color: #f1f5f9; color: #0f172a; padding: 10px; border-left: 4px solid #3b82f6; border-radius: 4px; font-family: monospace; font-size: 10pt;">\2</pre>', html, flags=re.DOTALL)
@@ -1039,59 +1037,65 @@ class DropZoneWidget(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("DropZone")
         self.setAcceptDrops(True)
         self.setCursor(QCursor(Qt.PointingHandCursor))
         
         self.normal_style = """
-            QFrame {
+            #DropZone {
                 border: 2px dashed #93c5fd;
-                border-radius: 12px;
+                border-radius: 10px;
                 background-color: #f8fafc;
             }
-            QFrame:hover {
+            #DropZone:hover {
                 border-color: #3b82f6;
                 background-color: #eff6ff;
             }
+            #DropZone QLabel {
+                border: none;
+                background: transparent;
+            }
         """
         self.drag_style = """
-            QFrame {
+            #DropZone {
                 border: 2px dashed #10b981;
-                border-radius: 12px;
+                border-radius: 10px;
                 background-color: #ecfdf5;
+            }
+            #DropZone QLabel {
+                border: none;
+                background: transparent;
             }
         """
         self.setStyleSheet(self.normal_style)
+        self.setMinimumHeight(95)
+        self.setMaximumHeight(125)
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(3)
 
-        self.label_icon = QLabel("📥", self)
-        self.label_icon.setFont(QFont("DejaVu Sans", 32))
-        self.label_icon.setStyleSheet("background: transparent; color: #3b82f6;")
-        self.label_icon.setAlignment(Qt.AlignCenter)
-        
         self.label_title = QLabel("KÉO THẢ FILE CÀI ĐẶT VÀO ĐÂY", self)
-        self.label_title.setFont(QFont("DejaVu Sans", 12, QFont.Bold))
-        self.label_title.setStyleSheet("background: transparent; color: #1e293b;")
+        self.label_title.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
+        self.label_title.setStyleSheet("color: #1e293b;")
         self.label_title.setAlignment(Qt.AlignCenter)
 
         self.label_sub = QLabel("Hỗ trợ: .deb  •  .AppImage  •  .zip  •  .tar.gz  •  .flatpak  •  .snap  •  .sh", self)
-        self.label_sub.setFont(QFont("DejaVu Sans", 9))
-        self.label_sub.setStyleSheet("background: transparent; color: #64748b;")
+        self.label_sub.setFont(QFont("DejaVu Sans", 8))
+        self.label_sub.setStyleSheet("color: #64748b;")
         self.label_sub.setAlignment(Qt.AlignCenter)
 
         self.btn_browse = QPushButton("Chọn file từ máy tính", self)
-        self.btn_browse.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
+        self.btn_browse.setFont(QFont("DejaVu Sans", 9, QFont.Bold))
         self.btn_browse.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_browse.setStyleSheet("""
             QPushButton {
                 background-color: #ffffff;
                 color: #2563eb;
                 border: 1.5px solid #3b82f6;
-                border-radius: 18px;
-                padding: 8px 24px;
+                border-radius: 14px;
+                padding: 4px 18px;
                 font-weight: bold;
             }
             QPushButton:hover {
@@ -1105,7 +1109,6 @@ class DropZoneWidget(QFrame):
         """)
         self.btn_browse.clicked.connect(self.select_file_dialog)
 
-        layout.addWidget(self.label_icon)
         layout.addWidget(self.label_title)
         layout.addWidget(self.label_sub)
         layout.addWidget(self.btn_browse, 0, Qt.AlignCenter)
@@ -1139,8 +1142,9 @@ class DropZoneWidget(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Linux App & AIaC Skill Manager (AIaC 2026)")
-        self.setMinimumSize(1100, 800)
+        self.setWindowTitle("Linux App & AIaC Skill Manager (Claude Code & Antigravity)")
+        self.setMinimumSize(850, 560)
+        self.resize(1080, 720)
         self.all_skills = {}
         self.pull_old_head = ""
         self.updated_skills = get_recent_updated_skills()
@@ -1150,11 +1154,11 @@ class MainWindow(QMainWindow):
         self.refresh_skills_table()
 
     def apply_global_ui_ux(self):
-        """Thiết lập CSS chuẩn UI/UX Modern Desktop (Chống mất chữ khi hover & căn chỉnh tỉ lệ hoàn hảo)"""
+        """Thiết lập CSS chuẩn UI/UX Responsive Desktop (Chống mất chữ & căn chỉnh linh hoạt)"""
         self.setStyleSheet("""
             QWidget {
                 font-family: "DejaVu Sans", "Noto Sans", "Liberation Sans", "Ubuntu", sans-serif;
-                font-size: 10pt;
+                font-size: 9.5pt;
                 color: #1e293b;
                 background-color: #f8fafc;
             }
@@ -1176,14 +1180,15 @@ class MainWindow(QMainWindow):
                 background-color: #e2e8f0;
                 color: #475569;
                 font-weight: bold;
-                font-size: 10.5pt;
-                padding: 10px 22px;
-                margin-right: 4px;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
+                font-size: 10pt;
+                padding: 8px 24px;
+                margin-right: 6px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
                 border: 1px solid #cbd5e1;
                 border-bottom: none;
-                min-height: 20px;
+                min-width: 150px;
+                min-height: 22px;
             }
             QTabBar::tab:selected {
                 background-color: #ffffff;
@@ -1201,47 +1206,31 @@ class MainWindow(QMainWindow):
                 background-color: #ffffff;
                 color: #1e293b;
                 border: 1.5px solid #cbd5e1;
-                border-radius: 8px;
-                padding: 6px 12px;
+                border-radius: 6px;
+                padding: 5px 10px;
                 font-weight: 600;
-                min-height: 24px;
+                min-height: 22px;
             }
             QComboBox:hover {
                 border-color: #3b82f6;
-                background-color: #ffffff;
-                color: #1e293b;
             }
             QComboBox::drop-down {
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
-                width: 30px;
+                width: 26px;
                 border-left: 1px solid #e2e8f0;
-                border-top-right-radius: 8px;
-                border-bottom-right-radius: 8px;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
             }
             QComboBox QAbstractItemView {
                 background-color: #ffffff;
                 color: #1e293b;
                 border: 1.5px solid #cbd5e1;
-                border-radius: 8px;
+                border-radius: 6px;
                 padding: 4px;
                 outline: none;
                 selection-background-color: #3b82f6;
                 selection-color: #ffffff;
-            }
-            QComboBox QAbstractItemView::item {
-                min-height: 30px;
-                padding: 6px 12px;
-                color: #1e293b;
-                background-color: #ffffff;
-            }
-            QComboBox QAbstractItemView::item:hover {
-                background-color: #eff6ff;
-                color: #1d4ed8;
-            }
-            QComboBox QAbstractItemView::item:selected {
-                background-color: #3b82f6;
-                color: #ffffff;
             }
 
             /* LINE EDIT */
@@ -1249,13 +1238,12 @@ class MainWindow(QMainWindow):
                 background-color: #ffffff;
                 color: #1e293b;
                 border: 1.5px solid #cbd5e1;
-                border-radius: 8px;
-                padding: 7px 12px;
-                font-size: 10pt;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 9.5pt;
             }
             QLineEdit:hover, QLineEdit:focus {
                 border-color: #3b82f6;
-                background-color: #ffffff;
                 color: #0f172a;
             }
 
@@ -1264,17 +1252,13 @@ class MainWindow(QMainWindow):
                 background-color: #ffffff;
                 color: #1e293b;
                 border: 1px solid #e2e8f0;
-                border-radius: 8px;
+                border-radius: 6px;
                 gridline-color: #f1f5f9;
                 selection-background-color: #eff6ff;
                 selection-color: #1e293b;
             }
             QTableWidget::item {
-                padding: 8px;
-                color: #1e293b;
-            }
-            QTableWidget::item:hover {
-                background-color: #f8fafc;
+                padding: 6px;
                 color: #1e293b;
             }
             QTableWidget::item:selected {
@@ -1286,7 +1270,7 @@ class MainWindow(QMainWindow):
                 background-color: #1e293b;
                 color: #ffffff;
                 font-weight: bold;
-                padding: 10px;
+                padding: 8px;
                 border: none;
             }
 
@@ -1294,13 +1278,13 @@ class MainWindow(QMainWindow):
             QScrollBar:vertical {
                 border: none;
                 background: #f1f5f9;
-                width: 8px;
-                border-radius: 4px;
+                width: 7px;
+                border-radius: 3px;
             }
             QScrollBar::handle:vertical {
                 background: #cbd5e1;
                 min-height: 20px;
-                border-radius: 4px;
+                border-radius: 3px;
             }
             QScrollBar::handle:vertical:hover {
                 background: #94a3b8;
@@ -1308,13 +1292,12 @@ class MainWindow(QMainWindow):
         """)
 
     def init_ui(self):
-        # Widget chứa tổng thể
         main_container = QWidget(self)
         self.setCentralWidget(main_container)
         
         main_layout = QVBoxLayout(main_container)
-        main_layout.setContentsMargins(16, 12, 16, 16)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(12, 10, 12, 12)
+        main_layout.setSpacing(8)
 
         # ==========================================
         # TOP HEADER APP BANNER
@@ -1325,17 +1308,17 @@ class MainWindow(QMainWindow):
                 background-color: #ffffff;
                 border: 1px solid #e2e8f0;
                 border-radius: 8px;
-                padding: 4px 16px;
+                padding: 4px 14px;
             }
         """)
         header_layout = QHBoxLayout(header_frame)
-        header_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout.setContentsMargins(6, 4, 6, 4)
         
         app_title = QLabel("AIaC Linux Workspace & App Manager", self)
-        app_title.setFont(QFont("DejaVu Sans", 13, QFont.Bold))
+        app_title.setFont(QFont("DejaVu Sans", 12, QFont.Bold))
         app_title.setStyleSheet("color: #1e293b; border: none;")
         
-        app_sub = QLabel("Hệ thống quản trị ứng dụng và đồng bộ Kỹ năng AIaC Antigravity", self)
+        app_sub = QLabel("Hệ thống quản trị ứng dụng và đồng bộ Kỹ năng AIaC (Claude Code & Antigravity)", self)
         app_sub.setFont(QFont("DejaVu Sans", 9))
         app_sub.setStyleSheet("color: #64748b; border: none;")
         
@@ -1349,28 +1332,32 @@ class MainWindow(QMainWindow):
         
         badge_os = QLabel("Linux Mint • 64-bit", self)
         badge_os.setFont(QFont("DejaVu Sans", 9, QFont.Bold))
-        badge_os.setStyleSheet("background-color: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 12px; border: none;")
+        badge_os.setStyleSheet("background-color: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 10px; border: none;")
         header_layout.addWidget(badge_os)
         
         main_layout.addWidget(header_frame)
 
         # ==========================================
-        # TAB WIDGET
+        # MAIN TAB WIDGET
         # ==========================================
         tab_widget = QTabWidget(self)
         main_layout.addWidget(tab_widget)
 
         # ------------------------------------------
-        # TAB 1: APP INSTALLER
+        # TAB 1: APP INSTALLER (RESPONSIVE SCROLL AREA)
         # ------------------------------------------
-        tab_installer = QWidget()
-        tab_installer_layout = QVBoxLayout(tab_installer)
-        tab_installer_layout.setContentsMargins(16, 16, 16, 16)
-        tab_installer_layout.setSpacing(12)
+        scroll_tab1 = QScrollArea(self)
+        scroll_tab1.setWidgetResizable(True)
+        scroll_tab1.setStyleSheet("border: none; background: transparent;")
+
+        content_tab1 = QWidget()
+        tab_installer_layout = QVBoxLayout(content_tab1)
+        tab_installer_layout.setContentsMargins(12, 12, 12, 12)
+        tab_installer_layout.setSpacing(10)
 
         # URL Input Layout
         url_layout = QHBoxLayout()
-        url_layout.setSpacing(10)
+        url_layout.setSpacing(8)
         url_label = QLabel("Link tải trực tiếp:", self)
         url_label.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         url_label.setStyleSheet("color: #1e293b;")
@@ -1378,30 +1365,24 @@ class MainWindow(QMainWindow):
         self.url_input = QLineEdit(self)
         self.url_input.setPlaceholderText("https://github.com/.../vuaoffice.AppImage (Dán liên kết trực tiếp)...")
         
-        self.btn_download = QPushButton("Tải & Cài đặt", self)
+        self.btn_download = QPushButton("Tải && Cài đặt", self)
         self.btn_download.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_download.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_download.setStyleSheet("""
             QPushButton {
                 background-color: #10b981;
                 color: #ffffff;
-                border-radius: 8px;
-                padding: 8px 20px;
+                border-radius: 6px;
+                padding: 6px 16px;
                 font-weight: bold;
                 border: none;
             }
-            QPushButton:hover {
-                background-color: #059669;
-                color: #ffffff;
-            }
-            QPushButton:pressed {
-                background-color: #047857;
-                color: #ffffff;
-            }
+            QPushButton:hover { background-color: #059669; }
+            QPushButton:pressed { background-color: #047857; }
         """)
         self.btn_download.clicked.connect(self.start_download)
         url_layout.addWidget(url_label)
-        url_layout.addWidget(self.url_input)
+        url_layout.addWidget(self.url_input, stretch=3)
         url_layout.addWidget(self.btn_download)
         tab_installer_layout.addLayout(url_layout)
 
@@ -1410,8 +1391,8 @@ class MainWindow(QMainWindow):
         self.download_progress.setRange(0, 100)
         self.download_progress.setValue(0)
         self.download_progress.setStyleSheet("""
-            QProgressBar { border: 1px solid #cbd5e1; border-radius: 6px; text-align: center; height: 18px; color: #1e293b; font-weight: bold; font-size: 9pt; }
-            QProgressBar::chunk { background-color: #3b82f6; border-radius: 5px; }
+            QProgressBar { border: 1px solid #cbd5e1; border-radius: 4px; text-align: center; height: 16px; color: #1e293b; font-weight: bold; font-size: 9pt; }
+            QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }
         """)
         self.download_progress.hide()
         tab_installer_layout.addWidget(self.download_progress)
@@ -1419,63 +1400,68 @@ class MainWindow(QMainWindow):
         # Drop Zone
         self.drop_zone = DropZoneWidget(self)
         self.drop_zone.fileDropped.connect(self.check_and_start_install)
-        tab_installer_layout.addWidget(self.drop_zone, stretch=2)
+        tab_installer_layout.addWidget(self.drop_zone)
 
         # Log View Tab 1
         self.log_view = QTextEdit(self)
         self.log_view.setReadOnly(True)
         self.log_view.setPlaceholderText("Nhật ký tiến trình cài đặt...")
-        self.log_view.setMaximumHeight(85)
-        self.log_view.setStyleSheet("background-color: #0f172a; color: #94a3b8; font-family: Monospace, Courier; border-radius: 8px; padding: 8px; border: 1px solid #1e293b;")
-        tab_installer_layout.addWidget(self.log_view, stretch=1)
+        self.log_view.setMaximumHeight(70)
+        self.log_view.setStyleSheet("background-color: #0f172a; color: #94a3b8; font-family: Monospace, Courier; border-radius: 6px; padding: 6px; border: 1px solid #1e293b;")
+        tab_installer_layout.addWidget(self.log_view)
 
         # Apps List
         list_label = QLabel("Danh sách ứng dụng đã quản lý (Double-click / Chuột phải để mở nhanh):", self)
         list_label.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
-        list_label.setStyleSheet("color: #1e293b; margin-top: 4px;")
+        list_label.setStyleSheet("color: #1e293b; margin-top: 2px;")
         tab_installer_layout.addWidget(list_label)
 
         self.table = QTableWidget(self)
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(["Tên Ứng Dụng", "Định Dạng", "Dung Lượng", "Nguồn File Cài", "Thao Tác"])
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(42)
+        self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Fixed)
-        self.table.setColumnWidth(4, 170)
+        self.table.setColumnWidth(4, 160)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
         self.table.itemDoubleClicked.connect(self.on_table_double_clicked)
-        tab_installer_layout.addWidget(self.table, stretch=3)
+        self.table.setMinimumHeight(180)
+        tab_installer_layout.addWidget(self.table)
 
-        tab_widget.addTab(tab_installer, "Trình cài đặt ứng dụng")
+        scroll_tab1.setWidget(content_tab1)
+        tab_widget.addTab(scroll_tab1, "Cài Đặt Ứng Dụng")
 
         # ------------------------------------------
-        # TAB 2: AIaC SKILLS MANAGER
+        # TAB 2: AIaC SKILLS MANAGER (RESPONSIVE SCROLL AREA)
         # ------------------------------------------
-        tab_aiac = QWidget()
-        tab_aiac_layout = QVBoxLayout(tab_aiac)
-        tab_aiac_layout.setContentsMargins(16, 16, 16, 16)
-        tab_aiac_layout.setSpacing(12)
+        scroll_tab2 = QScrollArea(self)
+        scroll_tab2.setWidgetResizable(True)
+        scroll_tab2.setStyleSheet("border: none; background: transparent;")
+
+        content_tab2 = QWidget()
+        tab_aiac_layout = QVBoxLayout(content_tab2)
+        tab_aiac_layout.setContentsMargins(12, 12, 12, 12)
+        tab_aiac_layout.setSpacing(10)
 
         # Hướng dẫn & Trạng thái đồng bộ kép cho Claude Code & Antigravity
         help_frame = QFrame(self)
-        help_frame.setStyleSheet("background-color: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #10b981; border-radius: 8px; padding: 12px;")
+        help_frame.setStyleSheet("background-color: #f0fdf4; border: 1.5px solid #86efac; border-left: 4px solid #10b981; border-radius: 6px; padding: 8px 12px;")
         help_layout = QVBoxLayout(help_frame)
-        help_layout.setSpacing(6)
-        help_layout.setContentsMargins(8, 4, 8, 4)
+        help_layout.setSpacing(3)
+        help_layout.setContentsMargins(6, 4, 6, 4)
         
         lbl_help_title = QLabel("ĐỒNG BỘ 2 TRONG 1: CLAUDE CODE & ANTIGRAVITY (AIaC HUB)", self)
         lbl_help_title.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         lbl_help_title.setStyleSheet("color: #065f46; border: none;")
         
         lbl_help_desc = QLabel(
-            "• <b>Áp dụng cho Claude Code:</b> Tự động liên kết vào <code>~/.claude/skills/</code> và nạp tự động qua 5 hooks.<br>"
-            "• <b>Áp dụng cho Antigravity:</b> Tự động liên kết vào <code>~/.gemini/config/skills/</code> để Antigravity nhận diện ngay.<br>"
-            "• <b>Kiểm tra & Pull Git:</b> Kéo toàn bộ prompt, rules và kỹ năng mới nhất từ kho AIaC về máy tính.<br>"
-            "• <b>Đồng bộ tất cả:</b> Kích hoạt và cập nhật 100% bộ kỹ năng cho cả 2 trợ lý AI cùng một lúc.",
+            "• <b>Claude Code:</b> Tự động liên kết vào <code>~/.claude/skills/</code> • "
+            "<b>Antigravity:</b> Tự động liên kết vào <code>~/.gemini/config/skills/</code><br>"
+            "• Bấm <b>[Đồng bộ 100% Skill]</b> để cập nhật và áp dụng toàn bộ bộ kỹ năng cho cả 2 trợ lý AI cùng lúc.",
             self
         )
         lbl_help_desc.setFont(QFont("DejaVu Sans", 9))
@@ -1488,10 +1474,10 @@ class MainWindow(QMainWindow):
 
         # Header Git Info & Dual Platform Status Cards
         status_frame = QFrame(self)
-        status_frame.setStyleSheet("background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px;")
+        status_frame.setStyleSheet("background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px;")
         status_layout = QVBoxLayout(status_frame)
-        status_layout.setSpacing(6)
-        status_layout.setContentsMargins(8, 6, 8, 6)
+        status_layout.setSpacing(4)
+        status_layout.setContentsMargins(6, 4, 6, 4)
         
         self.lbl_git_path = QLabel(f"<b>Kho nguồn AIaC:</b> <code>{AIAC_DIR}</code>", self)
         self.lbl_git_path.setFont(QFont("DejaVu Sans", 9))
@@ -1502,18 +1488,17 @@ class MainWindow(QMainWindow):
         self.lbl_git_info.setStyleSheet("color: #334155; border: none;")
         self.update_git_label()
 
-        # Hai thẻ hiển thị trạng thái đích
         dual_status_layout = QHBoxLayout()
-        dual_status_layout.setSpacing(10)
+        dual_status_layout.setSpacing(8)
         
         card_claude = QFrame(status_frame)
-        card_claude.setStyleSheet("background-color: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 6px; padding: 6px 10px;")
+        card_claude.setStyleSheet("background-color: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 4px; padding: 4px 8px;")
         c_l = QVBoxLayout(card_claude)
-        c_l.setSpacing(2)
-        lbl_c_title = QLabel("🤖 Claude Code (Anthropic)", card_claude)
+        c_l.setSpacing(1)
+        lbl_c_title = QLabel("Claude Code (Anthropic)", card_claude)
         lbl_c_title.setFont(QFont("DejaVu Sans", 9, QFont.Bold))
         lbl_c_title.setStyleSheet("color: #6d28d9; border: none;")
-        self.lbl_claude_status = QLabel("Thư mục: ~/.claude/skills/ • Trạng thái: Sẵn sàng", card_claude)
+        self.lbl_claude_status = QLabel("Thư mục: ~/.claude/skills/ • Đang kiểm tra...", card_claude)
         self.lbl_claude_status.setFont(QFont("DejaVu Sans", 8))
         self.lbl_claude_status.setStyleSheet("color: #4b5563; border: none;")
         c_l.addWidget(lbl_c_title)
@@ -1521,13 +1506,13 @@ class MainWindow(QMainWindow):
         dual_status_layout.addWidget(card_claude)
 
         card_gemini = QFrame(status_frame)
-        card_gemini.setStyleSheet("background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 6px 10px;")
+        card_gemini.setStyleSheet("background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 4px; padding: 4px 8px;")
         g_l = QVBoxLayout(card_gemini)
-        g_l.setSpacing(2)
-        lbl_g_title = QLabel("🚀 Antigravity (Google Gemini)", card_gemini)
+        g_l.setSpacing(1)
+        lbl_g_title = QLabel("Antigravity (Google Gemini)", card_gemini)
         lbl_g_title.setFont(QFont("DejaVu Sans", 9, QFont.Bold))
         lbl_g_title.setStyleSheet("color: #1d4ed8; border: none;")
-        self.lbl_gemini_status = QLabel("Thư mục: ~/.gemini/config/skills/ • Trạng thái: Sẵn sàng", card_gemini)
+        self.lbl_gemini_status = QLabel("Thư mục: ~/.gemini/config/skills/ • Đang kiểm tra...", card_gemini)
         self.lbl_gemini_status.setFont(QFont("DejaVu Sans", 8))
         self.lbl_gemini_status.setStyleSheet("color: #4b5563; border: none;")
         g_l.addWidget(lbl_g_title)
@@ -1541,35 +1526,35 @@ class MainWindow(QMainWindow):
 
         # Buttons Control layout
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
+        btn_layout.setSpacing(8)
         
-        self.btn_git_pull = QPushButton("📥 Kiểm tra & Pull Git", self)
+        self.btn_git_pull = QPushButton("Kiểm tra && Pull Git", self)
         self.btn_git_pull.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_git_pull.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_git_pull.setStyleSheet("""
-            QPushButton { background-color: #3b82f6; color: #ffffff; border-radius: 8px; padding: 9px 16px; border: none; font-weight: bold; }
-            QPushButton:hover { background-color: #2563eb; color: #ffffff; }
-            QPushButton:pressed { background-color: #1d4ed8; color: #ffffff; }
+            QPushButton { background-color: #3b82f6; color: #ffffff; border-radius: 6px; padding: 7px 14px; border: none; font-weight: bold; }
+            QPushButton:hover { background-color: #2563eb; }
+            QPushButton:pressed { background-color: #1d4ed8; }
         """)
         self.btn_git_pull.clicked.connect(self.run_git_pull)
         
-        self.btn_sync_all = QPushButton("🔄 Đồng bộ 100% Skill (Claude & Antigravity)", self)
+        self.btn_sync_all = QPushButton("Đồng bộ 100% Skill (Claude && Antigravity)", self)
         self.btn_sync_all.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_sync_all.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_sync_all.setStyleSheet("""
-            QPushButton { background-color: #10b981; color: #ffffff; border-radius: 8px; padding: 9px 16px; border: none; font-weight: bold; }
-            QPushButton:hover { background-color: #059669; color: #ffffff; }
-            QPushButton:pressed { background-color: #047857; color: #ffffff; }
+            QPushButton { background-color: #10b981; color: #ffffff; border-radius: 6px; padding: 7px 14px; border: none; font-weight: bold; }
+            QPushButton:hover { background-color: #059669; }
+            QPushButton:pressed { background-color: #047857; }
         """)
         self.btn_sync_all.clicked.connect(self.run_install_aiac)
         
-        self.btn_update_resource = QPushButton("📦 Cập nhật Resource", self)
+        self.btn_update_resource = QPushButton("Cập nhật Resource", self)
         self.btn_update_resource.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         self.btn_update_resource.setCursor(QCursor(Qt.PointingHandCursor))
         self.btn_update_resource.setStyleSheet("""
-            QPushButton { background-color: #8b5cf6; color: #ffffff; border-radius: 8px; padding: 9px 16px; border: none; font-weight: bold; }
-            QPushButton:hover { background-color: #7c3aed; color: #ffffff; }
-            QPushButton:pressed { background-color: #6d28d9; color: #ffffff; }
+            QPushButton { background-color: #8b5cf6; color: #ffffff; border-radius: 6px; padding: 7px 14px; border: none; font-weight: bold; }
+            QPushButton:hover { background-color: #7c3aed; }
+            QPushButton:pressed { background-color: #6d28d9; }
         """)
         self.btn_update_resource.clicked.connect(self.run_update_resource)
         
@@ -1580,10 +1565,10 @@ class MainWindow(QMainWindow):
 
         # Bộ lọc & Tìm kiếm kỹ năng
         filter_layout = QHBoxLayout()
-        filter_layout.setSpacing(10)
+        filter_layout.setSpacing(8)
         
-        lbl_filter = QLabel("<b>Bộ lọc:</b>", self)
-        lbl_filter.setFont(QFont("DejaVu Sans", 10))
+        lbl_filter = QLabel("Bộ lọc:", self)
+        lbl_filter.setFont(QFont("DejaVu Sans", 10, QFont.Bold))
         lbl_filter.setStyleSheet("color: #1e293b;")
         
         self.filter_combo = QComboBox(self)
@@ -1620,11 +1605,12 @@ class MainWindow(QMainWindow):
         self.skills_table.setColumnCount(3)
         self.skills_table.setHorizontalHeaderLabels(["Tên Kỹ Năng", "Trạng Thái", "Thao Tác"])
         self.skills_table.verticalHeader().setVisible(False)
-        self.skills_table.verticalHeader().setDefaultSectionSize(40)
+        self.skills_table.verticalHeader().setDefaultSectionSize(36)
         self.skills_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.skills_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.skills_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
-        self.skills_table.setColumnWidth(2, 110)
+        self.skills_table.setColumnWidth(2, 100)
+        self.skills_table.setMinimumHeight(240)
         self.skills_table.cellClicked.connect(self.on_skill_selected)
         left_layout.addWidget(self.skills_table)
         main_splitter.addWidget(left_widget)
@@ -1633,21 +1619,24 @@ class MainWindow(QMainWindow):
         self.detail_panel = QTextEdit(self)
         self.detail_panel.setReadOnly(True)
         self.detail_panel.setPlaceholderText("Vui lòng click chọn một Kỹ năng bên bảng trái để xem mô tả chi tiết, hướng dẫn cách sử dụng, dự án phù hợp và lịch sử commit...")
-        self.detail_panel.setStyleSheet("background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; font-size: 10.5pt; color: #1e293b;")
+        self.detail_panel.setStyleSheet("background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; font-size: 9.5pt; color: #1e293b;")
+        self.detail_panel.setMinimumHeight(240)
         main_splitter.addWidget(self.detail_panel)
         
-        main_splitter.setSizes([520, 500])
-        tab_aiac_layout.addWidget(main_splitter, stretch=3)
+        main_splitter.setSizes([450, 450])
+        tab_aiac_layout.addWidget(main_splitter)
 
         # Log View Tab 2 ở dưới cùng
         self.aiac_log_view = QTextEdit(self)
         self.aiac_log_view.setReadOnly(True)
         self.aiac_log_view.setPlaceholderText("Nhật ký tiến trình đồng bộ Git & Skills...")
-        self.aiac_log_view.setMaximumHeight(85)
-        self.aiac_log_view.setStyleSheet("background-color: #0f172a; color: #94a3b8; font-family: Monospace, Courier; border-radius: 8px; padding: 8px; border: 1px solid #1e293b;")
-        tab_aiac_layout.addWidget(self.aiac_log_view, stretch=1)
+        self.aiac_log_view.setMaximumHeight(65)
+        self.aiac_log_view.setStyleSheet("background-color: #0f172a; color: #94a3b8; font-family: Monospace, Courier; border-radius: 6px; padding: 6px; border: 1px solid #1e293b;")
+        tab_aiac_layout.addWidget(self.aiac_log_view)
 
-        tab_widget.addTab(tab_aiac, "AIaC Skill Manager")
+        scroll_tab2.setWidget(content_tab2)
+        tab_widget.addTab(scroll_tab2, "Kỹ Năng AIaC (Skills)")
+        self.statusBar().showMessage("Sẵn sàng.")
         self.statusBar().showMessage("Sẵn sàng.")
 
     def update_git_label(self):
